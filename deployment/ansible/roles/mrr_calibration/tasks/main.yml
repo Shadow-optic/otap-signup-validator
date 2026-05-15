@@ -1,0 +1,6 @@
+---
+- name: Generate MRR calibration LUT from wafer-test data
+  command: python /opt/otap/compiler/mrr_calibration_generator.py --wafer-data /opt/otap/compiler/wafer_test_data.json
+
+- name: Load calibration into PhotonForge P-FPGA
+  command: photonforge-load-calibration --lut generated/mrr_calibration_lut.json

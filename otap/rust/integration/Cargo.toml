@@ -1,0 +1,14 @@
+[package]
+name = "otap-integration"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+otap-modq = { path = "../modq" }
+otap-d3 = { path = "../d3" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = { workspace = true }
+
+[lib]
+crate-type = ["cdylib", "rlib"]

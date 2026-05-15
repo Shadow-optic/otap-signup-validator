@@ -1,7 +1,13 @@
-target/
+/target
+/generated
+*.json
+.DS_Store
 Cargo.lock
 **/*.rs.bk
-.DS_Store
 .idea/
 .vscode/
 *.swp
+
+# otap/ workspace build artifacts
+otap/rust/target/
+otap/rust/Cargo.lock
