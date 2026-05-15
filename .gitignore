@@ -1,0 +1,4 @@
+/target
+/generated
+*.json
+.DS_Store
