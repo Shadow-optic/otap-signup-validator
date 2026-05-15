@@ -155,10 +155,5 @@ pub enum RingError {
 
 #[inline(always)]
 fn spin_hint() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe { std::arch::x86_64::_mm_pause(); }
-    #[cfg(target_arch = "aarch64")]
-    unsafe { std::arch::aarch64::__yield(); }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     std::hint::spin_loop();
 }

@@ -225,7 +225,9 @@ func TestManager_CreateTranslation_Conflict(t *testing.T) {
 			GridGHz:    25.0,
 		},
 	}
-	if store.CreateLease(lease != nil { t.Fatalf("unexpected error: %v", store.CreateLease(lease) })
+	if err := store.CreateLease(lease); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	_, err := mgr.CreateTranslation("op-001", "op-002", fromWL, toWL, 1, 2, time.Hour)
 	if err == nil { t.Error("expected error, got nil") }
@@ -479,7 +481,9 @@ func TestManager_ValidateTranslation_ConflictingLease(t *testing.T) {
 			GridGHz:    25.0,
 		},
 	}
-	if store.CreateLease(lease != nil { t.Fatalf("unexpected error: %v", store.CreateLease(lease) })
+	if err := store.CreateLease(lease); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	entry := &models.TranslationEntry{
 		FromOperator: "op-001",

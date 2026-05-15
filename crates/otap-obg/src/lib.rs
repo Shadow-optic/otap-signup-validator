@@ -406,7 +406,10 @@ mod tests {
         let mut rf = RegisterFile::new();
         // Wavelength is in range (channel 0) but secret is not loaded.
         otap_csr::writer::set_wavelength(&mut rf, Wavelength::new(40).unwrap()).unwrap();
-        let err = SoftDriver::from_csr(&rf).unwrap_err();
+        let err = match SoftDriver::from_csr(&rf) {
+            Ok(_) => panic!("expected NotArmed error"),
+            Err(e) => e,
+        };
         assert!(matches!(err, ObgError::NotArmed(_)));
     }
 

@@ -5,7 +5,7 @@
 //! payloads and polls completions, validating the full ring buffer lifecycle.
 
 use otap_modq::bar::{self, BarMapping};
-use otap_modq::ring::{SLOT_FREE, SLOT_READY, SLOT_DONE};
+use otap_modq::ring::{SLOT_FREE, SLOT_READY};
 use otap_modq::{ModqQueue, ModqConfig, TransportMode};
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -156,11 +156,6 @@ fn simulated_fpga_consumer(running: Arc<AtomicBool>) {
             local_head += 1;
         } else {
             // Spin hint
-            #[cfg(target_arch = "x86_64")]
-            unsafe {
-                std::arch::x86_64::_mm_pause();
-            }
-            #[cfg(not(target_arch = "x86_64"))]
             std::hint::spin_loop();
         }
     }

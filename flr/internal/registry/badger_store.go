@@ -548,7 +548,8 @@ func (s *BadgerStore) AppendAuditLog(entry *models.AuditLogEntry) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal audit log entry: %w", err)
 	}
-	entry.Hash = sha3.Sum256(data)[:]
+	hash := sha3.Sum256(data)
+	entry.Hash = hash[:]
 
 	key := []byte(prefixAudit + entry.Timestamp.UTC().Format(time.RFC3339Nano))
 

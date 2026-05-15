@@ -144,9 +144,6 @@ fn simulated_consumer(running: Arc<AtomicBool>) {
             bar.write32(slot_base, SLOT_FREE);
             head += 1;
         } else {
-            #[cfg(target_arch = "x86_64")]
-            unsafe { std::arch::x86_64::_mm_pause(); }
-            #[cfg(not(target_arch = "x86_64"))]
             std::hint::spin_loop();
         }
     }
