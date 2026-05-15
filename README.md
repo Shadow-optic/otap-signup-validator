@@ -86,6 +86,7 @@ make demo-fullstack
 | `otap-obg` | Host-side OBG driver. `SoftDriver::from_csr` reads the register file just like the FPGA reads PCIe BAR. |
 | `otap-fabric` | Connects two `SoftDriver`s through a `Channel`. The pure-software replacement for fiber+transponder. |
 | `otap-flr-client` | Blocking REST client to the Go FLR. Programs the register file from FLR-served ApplicationSchemas. |
+| `otap-luxcode` | Lux 10B/12B line code (1087-pair codebook) + GF(1024) Reed-Solomon FEC. Tables generated at Zig comptime; AVX2 syndrome evaluator. |
 | `otap-cli` | Demos: `otap-local` (no FLR), `otap-fullstack` (live FLR). |
 
 ## What the FPGA replaces
@@ -177,7 +178,11 @@ otap/
 │   ├── otap-obg/                     # host driver
 │   ├── otap-fabric/                  # software fiber (FPGA bypass)
 │   ├── otap-flr-client/              # REST client → CSR programmer
+│   ├── otap-luxcode/                 # Lux line code + RS FEC (Zig-generated tables)
 │   └── otap-cli/                     # demo binaries
+├── zig/                              # Dev-time codegen (no runtime Zig dep)
+│   ├── luxcode.zig                   # 10B/12B codebook, proved at @comptime
+│   └── gf1024.zig                    # GF(1024) exp/log + RS generator
 ├── flr/                              # Federated Lambda Registry (Go)
 │   ├── cmd/
 │   │   ├── flrd/                     # server daemon

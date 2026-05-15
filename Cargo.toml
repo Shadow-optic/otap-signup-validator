@@ -11,6 +11,7 @@ members = [
     "crates/otap-flr-client",
     "crates/otap-fabric",
     "crates/otap-modq",
+    "crates/otap-luxcode",
     "crates/otap-cli",
 ]
 
@@ -33,6 +34,7 @@ otap-obg = { path = "crates/otap-obg" }
 otap-flr-client = { path = "crates/otap-flr-client" }
 otap-modq = { path = "crates/otap-modq" }
 otap-fabric = { path = "crates/otap-fabric" }
+otap-luxcode = { path = "crates/otap-luxcode" }
 
 # External (deterministic, no_std-compatible where possible)
 hmac = "0.12"

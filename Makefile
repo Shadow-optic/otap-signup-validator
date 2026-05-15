@@ -20,6 +20,7 @@
         demo-local demo-modq demo-fullstack \
         golden verify-golden verify-golden-http \
         bench-bitweave bench-modq \
+        zig-codegen zig-codegen-check \
         format
 
 # Pin the operator ID used across demo targets so the seed and the demo agree.
@@ -48,6 +49,10 @@ help:
 	@echo "  Benchmarks"
 	@echo "    make bench-bitweave      # Go bitweave conflict scanner ns/query"
 	@echo "    make bench-modq          # Rust MODQ ring throughput + latency"
+	@echo ""
+	@echo "  Zig comptime codegen (dev-time only)"
+	@echo "    make zig-codegen         # regenerate Lux codebook + GF(1024) tables"
+	@echo "    make zig-codegen-check   # regenerate and fail if tree changed (CI)"
 	@echo ""
 	@echo "  Cross-language vectors"
 	@echo "    make golden                          # regenerate testdata/golden_vectors.json"
@@ -170,6 +175,35 @@ verify-golden-http:
 	fi
 	OTAP_FLR_URL="$$OTAP_FLR_URL" \
 	  cargo test -p otap-flr-client --test golden_vectors_http --release -- --nocapture
+
+# ============================================================================
+# Zig-driven codegen (otap-luxcode)
+# ============================================================================
+#
+# zig/luxcode.zig proves the 10B/12B codebook exists at Zig comptime (via
+# @compileError if the pair count is short), then emits Rust const tables.
+# zig/gf1024.zig does the same for GF(1024) exp/log + RS(16) generator.
+#
+# Zig is *dev-time only* — CI does not need it, only the committed Rust.
+# The `zig-codegen-check` target re-runs codegen and diffs against tree.
+
+ZIG ?= zig
+
+zig-codegen:
+	@if ! command -v $(ZIG) >/dev/null 2>&1; then \
+	  echo "ERROR: zig not found on PATH. Install Zig 0.13+ or set ZIG=/path/to/zig." >&2; \
+	  echo "       Pre-built binaries: https://ziglang.org/download/" >&2; \
+	  exit 1; \
+	fi
+	@echo "===> Regenerating crates/otap-luxcode/src/codebook.rs"
+	@$(ZIG) run zig/luxcode.zig > crates/otap-luxcode/src/codebook.rs
+	@echo "===> Regenerating crates/otap-luxcode/src/gf1024.rs"
+	@$(ZIG) run zig/gf1024.zig  > crates/otap-luxcode/src/gf1024.rs
+	@echo "===> Done. Don't forget to commit the regenerated Rust."
+
+# CI hook: regenerate, then fail if the tree changed.
+zig-codegen-check: zig-codegen
+	@git diff --exit-code -- crates/otap-luxcode/src/codebook.rs crates/otap-luxcode/src/gf1024.rs
 
 # ============================================================================
 # Formatting

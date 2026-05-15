@@ -1,0 +1,12 @@
+[package]
+name = "otap-luxcode"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+description = "Lux 10B/12B line code + GF(1024) Reed-Solomon FEC. Tables generated at Zig comptime."
+
+[lib]
+path = "src/lib.rs"
