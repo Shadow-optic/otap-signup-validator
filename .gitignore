@@ -2,3 +2,8 @@
 /generated
 *.json
 .DS_Store
+Cargo.lock
+**/*.rs.bk
+.idea/
+.vscode/
+*.swp

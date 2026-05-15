@@ -1,0 +1,26 @@
+[package]
+name = "otap-modq"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OTAP Memory-Optical Direct Queue — zero-copy FPGA ring buffer interface"
+
+[dependencies]
+libc = "0.2"
+crossbeam-utils = "0.8"
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bin]]
+name = "modq_bench"
+path = "src/bin/modq_bench.rs"
+
+[[bin]]
+name = "modq_loopback"
+path = "src/bin/modq_loopback.rs"
+
+[[bench]]
+name = "ring_throughput"
+harness = false

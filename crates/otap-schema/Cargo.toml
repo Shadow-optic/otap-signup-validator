@@ -1,0 +1,13 @@
+[package]
+name = "otap-schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+otap-core.workspace = true
+thiserror.workspace = true
+bytemuck.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

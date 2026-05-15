@@ -1,0 +1,8 @@
+[package]
+name = "otap-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+otap-core.workspace = true

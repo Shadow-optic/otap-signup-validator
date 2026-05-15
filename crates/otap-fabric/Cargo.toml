@@ -1,0 +1,15 @@
+[package]
+name = "otap-fabric"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+otap-core.workspace = true
+otap-obg.workspace = true
+otap-sim.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+otap-csr.workspace = true
+otap-schema.workspace = true

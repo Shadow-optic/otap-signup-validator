@@ -2,6 +2,9 @@
 name = "terabit_fabric"
 version = "2.0.0"
 edition = "2021"
+authors = ["OTAP Project"]
+license = "Proprietary"
+rust-version = "1.75"
 
 [dependencies]
 validator = { version = "0.18", features = ["derive"] }
