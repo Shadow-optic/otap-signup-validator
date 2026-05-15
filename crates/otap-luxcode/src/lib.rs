@@ -91,23 +91,26 @@ pub fn rs_syndromes_scalar(received: &[u16]) -> [u16; RS_PARITY_LEN] {
 // Reed-Solomon syndromes — AVX2 SIMD (eight roots at a time)
 // ============================================================================
 
-/// Public entry point: picks AVX2 if the running CPU supports it, scalar
-/// otherwise. Both paths produce bit-identical results.
+/// Public entry point: picks the fastest available syndrome evaluator. On
+/// Sapphire-Rapids-class x86_64 (AVX-512 + VPCLMULQDQ) the path is gather-
+/// free and uses parallel carryless multiplication. All paths produce
+/// bit-identical results.
 pub fn rs_syndromes(received: &[u16]) -> [u16; RS_PARITY_LEN] {
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    #[cfg(target_arch = "x86_64")]
     {
+        if is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vl")
+            && is_x86_feature_detected!("vpclmulqdq")
+        {
+            // SAFETY: runtime feature check just succeeded.
+            return unsafe { rs_syndromes_avx512_clmul(received) };
+        }
         if is_x86_feature_detected!("avx2") {
             // SAFETY: runtime feature check just succeeded.
             return unsafe { rs_syndromes_avx2(received) };
         }
     }
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    {
-        // SAFETY: target_feature = "avx2" is set workspace-wide; CPU support
-        // is the user's responsibility at that point.
-        return unsafe { rs_syndromes_avx2(received) };
-    }
-    #[allow(unreachable_code)]
     rs_syndromes_scalar(received)
 }
 
@@ -195,6 +198,147 @@ pub unsafe fn rs_syndromes_avx2(received: &[u16]) -> [u16; RS_PARITY_LEN] {
     }
 
     out
+}
+
+// ============================================================================
+// Reed-Solomon syndromes — AVX-512 + VPCLMULQDQ (gather-free, all 16 roots)
+// ============================================================================
+
+/// Single-pass syndrome evaluator using VPCLMULQDQ for parallel carryless
+/// multiplication and Barrett-style reduction mod x^10 + x^3 + 1.
+///
+/// Eliminates the AVX2 path's per-step `_mm256_i32gather_epi32` (two of them,
+/// one per log+exp roundtrip) in favour of:
+///
+/// * Four `vpclmulqdq` per Horner step (4 carryless mults per instruction
+///   on Sapphire-Rapids = 16 GF(2^10) products per step, throughput-bound
+///   on the CLMUL port).
+/// * Two folds of `(p_hi << 3) ⊕ p_hi ⊕ p_lo` to reduce each 19-bit
+///   product down to the canonical 10-bit field element.
+///
+/// All 16 RS roots ride in 4 ZMM accumulators (4 × 128-bit lanes each, one
+/// accumulator per lane), so the codeword is traversed exactly once.
+///
+/// # Safety
+/// Requires `avx512f`, `avx512bw`, `avx512vl`, `vpclmulqdq`. Call only after
+/// `is_x86_feature_detected!` confirms all four, or under matching
+/// `target_feature`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,vpclmulqdq")]
+pub unsafe fn rs_syndromes_avx512_clmul(received: &[u16]) -> [u16; RS_PARITY_LEN] {
+    use std::arch::x86_64::*;
+
+    debug_assert_eq!(RS_PARITY_LEN, 16);
+
+    // Pack each α^j into the low 64 bits of one 128-bit lane of a ZMM. The
+    // four ZMMs together carry α^0..α^15. We pair them with accumulator
+    // ZMMs of identical shape and call VPCLMULQDQ with imm=0x00 (low × low).
+    let alpha_a = _mm512_setr_epi64(
+        GF1024_EXP[0] as i64, 0,
+        GF1024_EXP[1] as i64, 0,
+        GF1024_EXP[2] as i64, 0,
+        GF1024_EXP[3] as i64, 0,
+    );
+    let alpha_b = _mm512_setr_epi64(
+        GF1024_EXP[4] as i64, 0,
+        GF1024_EXP[5] as i64, 0,
+        GF1024_EXP[6] as i64, 0,
+        GF1024_EXP[7] as i64, 0,
+    );
+    let alpha_c = _mm512_setr_epi64(
+        GF1024_EXP[8] as i64, 0,
+        GF1024_EXP[9] as i64, 0,
+        GF1024_EXP[10] as i64, 0,
+        GF1024_EXP[11] as i64, 0,
+    );
+    let alpha_d = _mm512_setr_epi64(
+        GF1024_EXP[12] as i64, 0,
+        GF1024_EXP[13] as i64, 0,
+        GF1024_EXP[14] as i64, 0,
+        GF1024_EXP[15] as i64, 0,
+    );
+
+    let mask10 = _mm512_set1_epi64(0x3FF);
+
+    let mut acc_a = _mm512_setzero_si512();
+    let mut acc_b = _mm512_setzero_si512();
+    let mut acc_c = _mm512_setzero_si512();
+    let mut acc_d = _mm512_setzero_si512();
+
+    for &r in received {
+        let r_vec = _mm512_set1_epi64(r as i64);
+
+        // 4 × VPCLMULQDQ — 16 GF(2^10) products in flight.
+        let p_a = _mm512_clmulepi64_epi128::<0x00>(acc_a, alpha_a);
+        let p_b = _mm512_clmulepi64_epi128::<0x00>(acc_b, alpha_b);
+        let p_c = _mm512_clmulepi64_epi128::<0x00>(acc_c, alpha_c);
+        let p_d = _mm512_clmulepi64_epi128::<0x00>(acc_d, alpha_d);
+
+        // Reduce mod x^10 + x^3 + 1. Each product is at most a 19-bit
+        // polynomial; two folds by (x^3+1) bring it into [0, 1023].
+        let r_a = reduce_gf1024(p_a, mask10);
+        let r_b = reduce_gf1024(p_b, mask10);
+        let r_c = reduce_gf1024(p_c, mask10);
+        let r_d = reduce_gf1024(p_d, mask10);
+
+        acc_a = _mm512_xor_si512(r_a, r_vec);
+        acc_b = _mm512_xor_si512(r_b, r_vec);
+        acc_c = _mm512_xor_si512(r_c, r_vec);
+        acc_d = _mm512_xor_si512(r_d, r_vec);
+    }
+
+    // Each accumulator ZMM holds 4 values at u64 positions 0, 2, 4, 6.
+    let mut out = [0u16; RS_PARITY_LEN];
+    let mut buf = [0u64; 8];
+
+    _mm512_storeu_si512(buf.as_mut_ptr() as *mut __m512i, acc_a);
+    out[0] = buf[0] as u16;
+    out[1] = buf[2] as u16;
+    out[2] = buf[4] as u16;
+    out[3] = buf[6] as u16;
+
+    _mm512_storeu_si512(buf.as_mut_ptr() as *mut __m512i, acc_b);
+    out[4] = buf[0] as u16;
+    out[5] = buf[2] as u16;
+    out[6] = buf[4] as u16;
+    out[7] = buf[6] as u16;
+
+    _mm512_storeu_si512(buf.as_mut_ptr() as *mut __m512i, acc_c);
+    out[8] = buf[0] as u16;
+    out[9] = buf[2] as u16;
+    out[10] = buf[4] as u16;
+    out[11] = buf[6] as u16;
+
+    _mm512_storeu_si512(buf.as_mut_ptr() as *mut __m512i, acc_d);
+    out[12] = buf[0] as u16;
+    out[13] = buf[2] as u16;
+    out[14] = buf[4] as u16;
+    out[15] = buf[6] as u16;
+
+    out
+}
+
+/// GF(1024) Barrett reduction on a ZMM whose lanes are 19-bit polynomial
+/// products in the low 32 bits of each 128-bit slot.
+///
+/// p mod (x^10 + x^3 + 1) using two folds by (x^3 + 1):
+///   p1 = (p & 0x3FF) ⊕ (p_hi9 << 3) ⊕ p_hi9      // up to 12 bits
+///   r  = (p1 & 0x3FF) ⊕ (p1_hi << 3) ⊕ p1_hi    // exactly 10 bits
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+#[inline]
+unsafe fn reduce_gf1024(p: std::arch::x86_64::__m512i, mask10: std::arch::x86_64::__m512i) -> std::arch::x86_64::__m512i {
+    use std::arch::x86_64::*;
+    // First fold
+    let p_lo = _mm512_and_si512(p, mask10);
+    let p_hi = _mm512_srli_epi64::<10>(p);
+    let p_hi_sl3 = _mm512_slli_epi64::<3>(p_hi);
+    let p1 = _mm512_xor_si512(_mm512_xor_si512(p_lo, p_hi_sl3), p_hi);
+    // Second fold
+    let p1_lo = _mm512_and_si512(p1, mask10);
+    let p1_hi = _mm512_srli_epi64::<10>(p1);
+    let p1_hi_sl3 = _mm512_slli_epi64::<3>(p1_hi);
+    _mm512_xor_si512(_mm512_xor_si512(p1_lo, p1_hi_sl3), p1_hi)
 }
 
 // ============================================================================
@@ -333,10 +477,56 @@ mod tests {
         assert_eq!(scalar2, avx2, "AVX2 and scalar disagree on errored codeword");
     }
 
-    /// AVX2 vs scalar throughput on a realistic 255-symbol codeword (the
-    /// most common RS(255, 239) shape over GF(1024)). Prints to stderr;
-    /// run with `cargo test --release -p otap-luxcode -- --nocapture
-    /// rs_syndromes_throughput`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn rs_syndromes_avx512_matches_scalar() {
+        if !(is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vl")
+            && is_x86_feature_detected!("vpclmulqdq"))
+        {
+            eprintln!("AVX-512 + VPCLMULQDQ not available — skipping");
+            return;
+        }
+        let data: Vec<u16> = (1..=64u16).collect();
+        let mut codeword = encode_with_parity(&data);
+
+        let scalar = rs_syndromes_scalar(&codeword);
+        let avx512 = unsafe { rs_syndromes_avx512_clmul(&codeword) };
+        assert_eq!(scalar, avx512, "AVX-512 disagrees with scalar (clean)");
+
+        // Inject errors at a couple of positions.
+        codeword[3] ^= 0x1A5;
+        codeword[40] ^= 0x2F7;
+        codeword[71] ^= 0x0C9;
+        let scalar2 = rs_syndromes_scalar(&codeword);
+        let avx512_2 = unsafe { rs_syndromes_avx512_clmul(&codeword) };
+        assert_eq!(scalar2, avx512_2, "AVX-512 disagrees with scalar (errored)");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn rs_syndromes_avx512_matches_avx2() {
+        if !(is_x86_feature_detected!("avx2")
+            && is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("vpclmulqdq"))
+        {
+            eprintln!("Need both AVX2 and AVX-512+VPCLMULQDQ — skipping");
+            return;
+        }
+        for n in [16usize, 64, 128, 239, 255] {
+            let data: Vec<u16> = (0..n as u16).collect();
+            let codeword = encode_with_parity(&data);
+            let avx2 = unsafe { rs_syndromes_avx2(&codeword) };
+            let avx512 = unsafe { rs_syndromes_avx512_clmul(&codeword) };
+            assert_eq!(avx2, avx512, "AVX2 and AVX-512 disagree at n={}", n);
+        }
+    }
+
+    /// Throughput comparison across scalar / AVX2 / AVX-512+VPCLMULQDQ on
+    /// a 255-symbol codeword (the most common RS(255, 239) shape over
+    /// GF(1024)). Prints to stderr; run with
+    ///   cargo test --release -p otap-luxcode -- --nocapture rs_syndromes_throughput
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn rs_syndromes_throughput() {
@@ -349,52 +539,80 @@ mod tests {
         let data: Vec<u16> = (0..239u16).collect();
         let codeword = encode_with_parity(&data);
 
-        // Warm-up + timed runs.
         let warmup = 1_000;
         let iters = 200_000;
+        let bits_per_iter: u64 = (codeword.len() as u64) * GF1024_FIELD_BITS as u64;
 
+        // Warm-up all paths.
         for _ in 0..warmup {
             let _ = rs_syndromes_scalar(&codeword);
             let _ = unsafe { rs_syndromes_avx2(&codeword) };
         }
+        let have_avx512 = is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vl")
+            && is_x86_feature_detected!("vpclmulqdq");
+        if have_avx512 {
+            for _ in 0..warmup {
+                let _ = unsafe { rs_syndromes_avx512_clmul(&codeword) };
+            }
+        }
+
+        let mut acc: u16 = 0;
 
         let t0 = Instant::now();
-        let mut acc: u16 = 0;
         for _ in 0..iters {
             let s = rs_syndromes_scalar(&codeword);
             acc ^= s[0];
         }
         let scalar_elapsed = t0.elapsed();
+        let scalar_gbps =
+            (bits_per_iter * iters as u64) as f64 / scalar_elapsed.as_secs_f64() / 1e9;
 
         let t1 = Instant::now();
         for _ in 0..iters {
             let s = unsafe { rs_syndromes_avx2(&codeword) };
             acc ^= s[0];
         }
-        let avx_elapsed = t1.elapsed();
+        let avx2_elapsed = t1.elapsed();
+        let avx2_gbps = (bits_per_iter * iters as u64) as f64 / avx2_elapsed.as_secs_f64() / 1e9;
 
-        // Each codeword is 255 symbols × 10 bits = 2550 bits payload.
-        let bits_per_iter: u64 = (codeword.len() as u64) * GF1024_FIELD_BITS as u64;
-        let scalar_gbps =
-            (bits_per_iter * iters as u64) as f64 / scalar_elapsed.as_secs_f64() / 1e9;
-        let avx_gbps = (bits_per_iter * iters as u64) as f64 / avx_elapsed.as_secs_f64() / 1e9;
+        let avx512_gbps = if have_avx512 {
+            let t2 = Instant::now();
+            for _ in 0..iters {
+                let s = unsafe { rs_syndromes_avx512_clmul(&codeword) };
+                acc ^= s[0];
+            }
+            let avx512_elapsed = t2.elapsed();
+            (bits_per_iter * iters as u64) as f64 / avx512_elapsed.as_secs_f64() / 1e9
+        } else {
+            f64::NAN
+        };
 
         eprintln!(
-            "syndrome rate: scalar = {:.2} Gbps, AVX2 = {:.2} Gbps, speedup = {:.2}x (acc={})",
+            "syndrome rate (RS(255,239) over GF(1024)):\n  scalar    = {:>8.3} Gbps\n  AVX2      = {:>8.3} Gbps  ({:.2}x scalar)\n  AVX512+   = {:>8.3} Gbps  ({:.2}x scalar, {:.2}x AVX2)\n  (acc={})",
             scalar_gbps,
-            avx_gbps,
-            avx_gbps / scalar_gbps,
+            avx2_gbps, avx2_gbps / scalar_gbps,
+            avx512_gbps, avx512_gbps / scalar_gbps, avx512_gbps / avx2_gbps,
             acc
         );
 
-        // AVX2 should not be slower than scalar (modulo measurement noise).
-        // 0.8x guard tolerates jitter on shared CI runners.
+        // AVX2 should not regress vs scalar. 0.8x tolerates jitter.
         assert!(
-            avx_gbps > scalar_gbps * 0.8,
+            avx2_gbps > scalar_gbps * 0.8,
             "AVX2 ({:.2} Gbps) regressed vs scalar ({:.2} Gbps)",
-            avx_gbps,
+            avx2_gbps,
             scalar_gbps
         );
+        if have_avx512 {
+            // The whole point of VPCLMULQDQ is to beat AVX2.
+            assert!(
+                avx512_gbps > avx2_gbps * 1.2,
+                "AVX-512+VPCLMULQDQ ({:.2} Gbps) is not at least 1.2x AVX2 ({:.2} Gbps)",
+                avx512_gbps,
+                avx2_gbps
+            );
+        }
     }
 
     fn encode_with_parity(data: &[u16]) -> Vec<u16> {
