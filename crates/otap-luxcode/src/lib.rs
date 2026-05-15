@@ -25,11 +25,12 @@
 
 mod codebook;
 mod gf1024;
+pub mod bitsliced;
 
 pub use codebook::{LuxPair, LUX_CODEBOOK, LUX_PAIR_COUNT, LUX_PLUS2_PAIR_COUNT, LUX_ZERO_PAIR_COUNT};
 pub use gf1024::{
     GF1024_EXP, GF1024_EXP_U32, GF1024_FIELD_BITS, GF1024_LOG, GF1024_LOG_U32, GF1024_NONZERO,
-    GF1024_ORDER, GF1024_PRIM_POLY, RS_GENERATOR, RS_PARITY_LEN,
+    GF1024_ORDER, GF1024_PRIM_POLY, MUL_BY_ALPHA, RS_GENERATOR, RS_PARITY_LEN,
 };
 
 // ============================================================================

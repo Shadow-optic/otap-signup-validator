@@ -81,6 +81,53 @@ const tables: Tables = blk: {
     break :blk t;
 };
 
+// --- Multiplication-by-α^j matrices for bit-sliced arithmetic ----------------
+//
+// Bit-sliced GF(2^10) decomposes each field element into 10 separate bit
+// planes (one plane per bit position, holding that bit across many codewords).
+// Multiplication by a *constant* α^j is then a linear GF(2) transformation on
+// the planes: out[k] = XOR over { in[i] : M_{α^j}[k][i] == 1 }.
+//
+// We precompute the 10×10 binary matrix for each α^j we care about (the 16
+// RS roots) and emit it as a Rust `[[u16; 10]; 16]`. Each row mask has 10
+// bits packed into a u16: bit i tells whether input plane i contributes to
+// output plane k.
+
+const NUM_MUL_MATRICES: usize = 16;
+const MulMatrix = [10]u16;
+
+fn gfMul(a: u16, b: u16) u16 {
+    if (a == 0 or b == 0) return 0;
+    const sum: u32 = @as(u32, tables.log[a]) + @as(u32, tables.log[b]);
+    return tables.exp[@intCast(sum % NONZERO)];
+}
+
+fn buildMulMatrix(alpha: u16) MulMatrix {
+    var m: MulMatrix = [_]u16{0} ** 10;
+    var i: u8 = 0;
+    while (i < 10) : (i += 1) {
+        const e_i: u16 = @as(u16, 1) << @intCast(i);
+        const prod = gfMul(e_i, alpha);
+        var k: u8 = 0;
+        while (k < 10) : (k += 1) {
+            if ((prod >> @intCast(k)) & 1 != 0) {
+                m[k] |= @as(u16, 1) << @intCast(i);
+            }
+        }
+    }
+    return m;
+}
+
+const mul_matrices: [NUM_MUL_MATRICES]MulMatrix = blk: {
+    @setEvalBranchQuota(2_000_000);
+    var arr: [NUM_MUL_MATRICES]MulMatrix = undefined;
+    var j: usize = 0;
+    while (j < NUM_MUL_MATRICES) : (j += 1) {
+        arr[j] = buildMulMatrix(tables.exp[j]);
+    }
+    break :blk arr;
+};
+
 // --- Rust emitter ----------------------------------------------------------
 
 pub fn main() !void {
@@ -123,6 +170,27 @@ pub fn main() !void {
     // values padded to u32 for VPGATHERDD.
     try emitU32Mirror(out, "GF1024_EXP_U32", tables.exp[0..]);
     try emitU32Mirror(out, "GF1024_LOG_U32", tables.log[0..]);
+
+    // Multiplication-by-α^j matrices for the bit-sliced evaluator.
+    try out.print(
+        \\/// Multiplication-by-α^j matrices for bit-sliced GF(2^10) arithmetic.
+        \\///
+        \\/// `MUL_BY_ALPHA[j][k]` is a 10-bit mask: bit `i` is set iff the bit-i
+        \\/// plane of the input contributes to the bit-k plane of the output when
+        \\/// the value is multiplied by α^j in GF(2^10) (primitive polynomial
+        \\/// x^10 + x^3 + 1). Used by `crate::bitsliced::rs_syndromes_bitsliced`.
+        \\pub const MUL_BY_ALPHA: [[u16; 10]; {[n]d}] = [
+        \\
+    , .{ .n = NUM_MUL_MATRICES });
+    for (mul_matrices, 0..) |m, j| {
+        try out.print("    // α^{d}\n    [", .{j});
+        for (m, 0..) |row, k| {
+            try out.print("0x{X:0>3}", .{row});
+            if (k + 1 < m.len) try out.print(", ", .{});
+        }
+        try out.print("],\n", .{});
+    }
+    try out.print("];\n", .{});
 }
 
 fn emitU32Mirror(out: anytype, name: []const u8, arr: []const u16) !void {
