@@ -1,0 +1,41 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+flr
+bin/
+dist/
+
+# Test
+*.test
+coverage.out
+coverage.html
+
+# Data
+data/
+*.db
+*.badger
+
+# Keys and certs
+keys/
+certs/
+*.pem
+*.key
+*.crt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+vendor/
+
+gen/

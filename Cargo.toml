@@ -1,7 +1,68 @@
-[package]
-name = "signup_validator"
+[workspace]
+resolver = "2"
+members = [
+    "crates/otap-core",
+    "crates/otap-crypto",
+    "crates/otap-schema",
+    "crates/otap-codec",
+    "crates/otap-sim",
+    "crates/otap-csr",
+    "crates/otap-obg",
+    "crates/otap-flr-client",
+    "crates/otap-fabric",
+    "crates/otap-modq",
+    "crates/otap-cli",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["OTAP Project"]
+license = "Proprietary"
+rust-version = "1.75"
 
-[dependencies]
-validator = { version = "0.18", features = ["derive"] }
+[workspace.dependencies]
+# Internal crates
+otap-core = { path = "crates/otap-core" }
+otap-crypto = { path = "crates/otap-crypto" }
+otap-schema = { path = "crates/otap-schema" }
+otap-codec = { path = "crates/otap-codec" }
+otap-sim = { path = "crates/otap-sim" }
+otap-csr = { path = "crates/otap-csr" }
+otap-obg = { path = "crates/otap-obg" }
+otap-flr-client = { path = "crates/otap-flr-client" }
+otap-modq = { path = "crates/otap-modq" }
+otap-fabric = { path = "crates/otap-fabric" }
+
+# External (deterministic, no_std-compatible where possible)
+hmac = "0.12"
+sha2 = "0.10"
+thiserror = "1.0"
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+bytemuck = { version = "1.14", features = ["derive"] }
+libc = "0.2"
+crossbeam-utils = "0.8"
+
+# FLR client deps (host-side only; not pulled by no_std crates)
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+hex = "0.4"
+
+# Dev / tooling
+proptest = "1.4"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+overflow-checks = false
+
+# Reference profile — slower but checks invariants
+[profile.reference]
+inherits = "release"
+debug = true
+overflow-checks = true
+lto = "thin"

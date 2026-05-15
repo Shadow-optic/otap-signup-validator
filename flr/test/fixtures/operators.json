@@ -1,0 +1,29 @@
+[
+  {
+    "id": "op-verizon-001",
+    "name": "Verizon Optical Network",
+    "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEvF0s0YHZfM570XgVZhL7mIH8LZbq71qQAwSnM/GHt8Hp+jpKaKS0YgrE7ygNyFcu0fXC7+QcZDqj+jrmmrBZiA==",
+    "endpoint": "https://flr.verizon.com:9443",
+    "status": 1,
+    "joined_at": "2024-01-15T08:00:00Z",
+    "last_seen": "2024-06-20T14:30:00Z"
+  },
+  {
+    "id": "op-lumen-002",
+    "name": "Lumen Global Fiber",
+    "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMH3ah8E7hE3puN0Ku1zLU4k4L7T7i5fJ+QELfQ5yEH1F1Dq2R4ZkL0q6pR6mA7c3+gqL9L8ZK3gD0j8w4a3tKw==",
+    "endpoint": "https://flr.lumen.com:9443",
+    "status": 1,
+    "joined_at": "2024-02-01T10:00:00Z",
+    "last_seen": "2024-06-20T13:45:00Z"
+  },
+  {
+    "id": "op-cogent-003",
+    "name": "Cogent Communications",
+    "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAER0c3qM9bN7zI5Gz5I7+5G7b8v7e7H9H0D9f7l5r6g7b8v0D3D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7D7DA==",
+    "endpoint": "https://flr.cogentco.com:9443",
+    "status": 1,
+    "joined_at": "2024-03-10T12:00:00Z",
+    "last_seen": "2024-06-19T22:00:00Z"
+  }
+]

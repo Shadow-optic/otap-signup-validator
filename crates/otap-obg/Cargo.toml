@@ -1,0 +1,22 @@
+[package]
+name = "otap-obg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+otap-core.workspace = true
+otap-crypto.workspace = true
+otap-schema.workspace = true
+otap-codec.workspace = true
+otap-sim.workspace = true
+otap-csr.workspace = true
+otap-modq = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[features]
+default = []
+modq = ["dep:otap-modq"]
+
+[dev-dependencies]
+proptest.workspace = true
