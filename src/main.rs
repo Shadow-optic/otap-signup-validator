@@ -71,7 +71,7 @@ fn main() {
                 let payloads = &[&payload[..]];
                 pfcp_engine.enforce_coherence(lane as u8, payload);
                 let _sid = p_fpga.submit_batch(lane as u8, payloads);
-                let _sid2 = tx_ring.submitBatch(lane as u8, payloads);
+                let _sid2 = tx_ring.submit_batch(lane as u8, payloads);
                 seq += 1;
             }
         });

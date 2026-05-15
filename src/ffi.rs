@@ -22,7 +22,7 @@ impl OtapMultiLaneTxRing {
     }
 
     #[allow(non_snake_case)]
-    pub fn submitBatch(&self, _lane: u8, _payloads: &[&[u8]]) -> u64 {
+    pub fn submit_batch(&self, _lane: u8, _payloads: &[&[u8]]) -> u64 {
         self.sid.fetch_add(1, Ordering::Relaxed)
     }
 }
