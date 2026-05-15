@@ -407,4 +407,131 @@ mod tests {
         codeword[..data.len()].copy_from_slice(data);
         codeword
     }
+
+    /// Multi-thread scaling bench. Each worker processes its own private
+    /// `out` buffer over a shared, read-only column-major codeword buffer
+    /// — fully independent batches, no synchronization in the hot loop.
+    /// Run with:
+    ///   cargo test --release -p otap-luxcode -- --nocapture rs_syndromes_bitsliced_threaded_scaling
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn rs_syndromes_bitsliced_threaded_scaling() {
+        if !(is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw")) {
+            eprintln!("AVX-512BW not available — skipping");
+            return;
+        }
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let cw_len = 255usize;
+        let data_len = cw_len - RS_PARITY_LEN;
+
+        let rows: Vec<Vec<u16>> = (0..BITSLICED_BATCH)
+            .map(|c| {
+                let data: Vec<u16> = (0..data_len)
+                    .map(|i| (c as u16 + i as u16 * 31) & 0x3FF)
+                    .collect();
+                encode_with_parity(&data)
+            })
+            .collect();
+        let mut columnar = Vec::new();
+        transpose_to_columnar(&rows, &mut columnar);
+        let columnar = Arc::new(columnar);
+
+        let n_cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+
+        // Per-thread work budget: enough iterations to dwarf wake-up jitter
+        // but not so many we wait minutes. ~50K codewords/thread is a few ms.
+        let iters_per_thread = 100usize;
+
+        eprintln!(
+            "\nmulti-thread scaling (bit-sliced RS(255, 239), {} cores available):",
+            n_cores
+        );
+        eprintln!(
+            "  threads | aggregate Gbps |  per-thread Gbps | scaling efficiency"
+        );
+        eprintln!(
+            "  --------+----------------+------------------+-------------------"
+        );
+
+        let thread_counts: Vec<usize> = [1usize, 2, 4, 8, 16, 32, 64]
+            .iter()
+            .copied()
+            .filter(|&n| n <= n_cores.max(1))
+            .collect();
+
+        let mut single_thread_gbps: Option<f64> = None;
+
+        for &n_threads in &thread_counts {
+            // Warm up.
+            {
+                let handles: Vec<_> = (0..n_threads)
+                    .map(|_| {
+                        let cw = columnar.clone();
+                        std::thread::spawn(move || {
+                            let mut out = vec![[0u16; RS_PARITY_LEN]; BITSLICED_BATCH];
+                            for _ in 0..5 {
+                                // SAFETY: avx512f+bw checked above.
+                                unsafe { rs_syndromes_bitsliced(&cw, cw_len, &mut out) };
+                            }
+                        })
+                    })
+                    .collect();
+                for h in handles {
+                    h.join().unwrap();
+                }
+            }
+
+            let t = Instant::now();
+            let handles: Vec<_> = (0..n_threads)
+                .map(|_| {
+                    let cw = columnar.clone();
+                    std::thread::spawn(move || {
+                        let mut out = vec![[0u16; RS_PARITY_LEN]; BITSLICED_BATCH];
+                        let mut acc: u16 = 0;
+                        for _ in 0..iters_per_thread {
+                            // SAFETY: avx512f+bw checked above.
+                            unsafe { rs_syndromes_bitsliced(&cw, cw_len, &mut out) };
+                            acc ^= out[0][0];
+                        }
+                        acc
+                    })
+                })
+                .collect();
+            let mut sink: u16 = 0;
+            for h in handles {
+                sink ^= h.join().unwrap();
+            }
+            let dt = t.elapsed();
+
+            let bits = (n_threads as u64)
+                * (iters_per_thread as u64)
+                * (BITSLICED_BATCH as u64)
+                * (cw_len as u64)
+                * (crate::GF1024_FIELD_BITS as u64);
+            let agg_gbps = bits as f64 / dt.as_secs_f64() / 1e9;
+            let per_thread_gbps = agg_gbps / (n_threads as f64);
+
+            if single_thread_gbps.is_none() {
+                single_thread_gbps = Some(per_thread_gbps);
+            }
+            let efficiency = per_thread_gbps / single_thread_gbps.unwrap() * 100.0;
+
+            eprintln!(
+                "  {:>7} | {:>9.2} Gbps   | {:>11.2} Gbps   | {:>16.1}%",
+                n_threads, agg_gbps, per_thread_gbps, efficiency
+            );
+            std::hint::black_box(sink);
+        }
+
+        eprintln!(
+            "\nlane-rate targets:\n  100G optical lane = 100 Gbps\n  400G PAM4 lane    = 400 Gbps\n  1.6T fiber pipe   = 1600 Gbps"
+        );
+        eprintln!(
+            "note: scaling efficiency above 100% physical cores reflects SMT\nport-sharing (vpternlog and vpmovw2m both live on port 5)"
+        );
+    }
 }
