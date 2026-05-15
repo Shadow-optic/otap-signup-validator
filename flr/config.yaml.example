@@ -1,0 +1,49 @@
+# FLR — Federated Lambda Registry
+# Configuration Example
+#
+# Copy this to config.yaml and customize for your operator node.
+
+node:
+  id: "op-001"
+  name: "OTAP Network Operator A"
+  listen_addr: "0.0.0.0:9090"
+
+registry:
+  db_path: "./data/registry"
+  merkle_interval: "5m"
+
+crypto:
+  private_key_path: "./keys/node.pem"
+  public_key_path: "./keys/node.pub"
+
+federation:
+  gossip_interval: "30s"
+  sync_timeout: "10s"
+  max_peers: 50
+
+# Peer operators in the federation
+operators:
+  - id: "op-002"
+    name: "OTAP Network Operator B"
+    endpoint: "https://op-b.otap.network:9090"
+    public_key_path: "./keys/op-b.pub"
+  - id: "op-003"
+    name: "OTAP Network Operator C"
+    endpoint: "https://op-c.otap.network:9090"
+    public_key_path: "./keys/op-c.pub"
+
+server:
+  grpc_addr: ":9090"
+  http_addr: ":8080"
+  tls_cert: "./certs/server.crt"
+  tls_key: "./certs/server.key"
+  client_ca: "./certs/ca.crt"
+  enable_auth: true
+
+logging:
+  level: "info"
+  format: "json"
+
+compliance:
+  itu_grid: "C_BAND"
+  grid_spacing_ghz: 25.0

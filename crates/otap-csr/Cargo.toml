@@ -1,0 +1,11 @@
+[package]
+name = "otap-csr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+otap-core.workspace = true
+otap-crypto.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true

@@ -1,0 +1,110 @@
+# FLR — Local Development Stack
+# Spin up 3 operator nodes for federation testing
+
+version: "3.8"
+
+services:
+  # Operator A — Primary node
+  flr-node-a:
+    build: .
+    image: otap/flr:latest
+    container_name: flr-node-a
+    command:
+      - "serve"
+      - "--config"
+      - "/config/config.yaml"
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ./data/op-a:/data
+      - ./config/op-a.yaml:/config/config.yaml:ro
+    environment:
+      FLR_NODE_ID: op-a
+      FLR_NODE_NAME: "Operator A"
+      FLR_DB_PATH: /data/registry
+      FLR_GRPC_ADDR: ":9090"
+      FLR_HTTP_ADDR: ":8080"
+    networks:
+      - flr-net
+    restart: unless-stopped
+
+  # Operator B
+  flr-node-b:
+    build: .
+    image: otap/flr:latest
+    container_name: flr-node-b
+    command:
+      - "serve"
+      - "--config"
+      - "/config/config.yaml"
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    volumes:
+      - ./data/op-b:/data
+      - ./config/op-b.yaml:/config/config.yaml:ro
+    environment:
+      FLR_NODE_ID: op-b
+      FLR_NODE_NAME: "Operator B"
+      FLR_DB_PATH: /data/registry
+      FLR_GRPC_ADDR: ":9090"
+      FLR_HTTP_ADDR: ":8080"
+    networks:
+      - flr-net
+    restart: unless-stopped
+
+  # Operator C
+  flr-node-c:
+    build: .
+    image: otap/flr:latest
+    container_name: flr-node-c
+    command:
+      - "serve"
+      - "--config"
+      - "/config/config.yaml"
+    ports:
+      - "8082:8080"
+      - "9092:9090"
+    volumes:
+      - ./data/op-c:/data
+      - ./config/op-c.yaml:/config/config.yaml:ro
+    environment:
+      FLR_NODE_ID: op-c
+      FLR_NODE_NAME: "Operator C"
+      FLR_DB_PATH: /data/registry
+      FLR_GRPC_ADDR: ":9090"
+      FLR_HTTP_ADDR: ":8080"
+    networks:
+      - flr-net
+    restart: unless-stopped
+
+  # Prometheus (optional monitoring)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: flr-prometheus
+    ports:
+      - "9093:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - flr-net
+    profiles:
+      - monitoring
+
+  # Grafana (optional dashboards)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: flr-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: flr-admin
+    networks:
+      - flr-net
+    profiles:
+      - monitoring
+
+networks:
+  flr-net:
+    driver: bridge
