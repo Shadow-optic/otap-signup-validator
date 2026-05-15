@@ -7,7 +7,7 @@ edition = "2021"
 validator = { version = "0.18", features = ["derive"] }
 crossbeam-utils = "0.8.7"
 libc = "0.2"
-cudarc = { version = "0.14", features = ["cuda", "multi-device"] }
+cudarc = { version = "0.14", optional = true, default-features = false, features = ["driver", "dynamic-linking", "cuda-12000"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
