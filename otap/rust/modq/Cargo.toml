@@ -1,0 +1,12 @@
+[package]
+name = "otap-modq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = { workspace = true }
+thiserror = "1.0"
+crossbeam-utils = "0.8"
+
+[lib]
+path = "src/lib.rs"

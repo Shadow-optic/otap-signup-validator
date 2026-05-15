@@ -7,3 +7,7 @@ Cargo.lock
 .idea/
 .vscode/
 *.swp
+
+# otap/ workspace build artifacts
+otap/rust/target/
+otap/rust/Cargo.lock
