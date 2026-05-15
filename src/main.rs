@@ -26,7 +26,6 @@ const CXL_POOL_SIZE: usize = 32 * 1024 * 1024 * 1024;
 fn main() {
     println!("[OTAP] Starting 20 Tbps PhotonForge endpoint (v2.0)");
 
-    // Control-plane validation example
     let signup = SignupData {
         username: "operator-chi".to_string(),
         password: "p@$$w0rD123".to_string(),
@@ -37,7 +36,6 @@ fn main() {
         Err(e) => println!("[Validator] Signup rejected: {}", e),
     }
 
-    // Provisioning
     pcie::tune_pcie_mps_mrrs("/sys/bus/pci/devices/0000:01:00.0", 4096, 4096).unwrap();
     for gpu_id in 0..GPU_COUNT {
         pcie::enable_gpudirect_p2p(gpu_id, 0xDEADBEEF0000).unwrap();
