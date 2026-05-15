@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"sort"
 	"testing"

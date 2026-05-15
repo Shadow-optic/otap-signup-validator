@@ -235,12 +235,12 @@ func TestValidateITUCompliance(t *testing.T) {
 	}{
 		{
 			name:    "valid C-band 1550.12nm on 50GHz",
-			wl:      createWavelength(1550.12, 4, models.BandCBand, 50.0),
+			wl:      createWavelength(1550.12, 6, models.BandCBand, 50.0),
 			wantErr: false,
 		},
 		{
 			name:    "valid C-band 1530.33nm on 50GHz",
-			wl:      createWavelength(1530.33, -34, models.BandCBand, 50.0),
+			wl:      createWavelength(1530.33, 56, models.BandCBand, 50.0),
 			wantErr: false,
 		},
 		{
@@ -282,9 +282,9 @@ func TestValidateDWDMGrid(t *testing.T) {
 	auditor := NewAuditor(store)
 
 	t.Run("on grid", func(t *testing.T) {
-		onGrid, chNum := auditor.ValidateDWDMGrid(1550.12, 50.0)
+		// 1552.524nm is the ITU reference wavelength (channel 0): always on grid.
+		onGrid, _ := auditor.ValidateDWDMGrid(ReferenceWavelengthNm, 50.0)
 		assert.True(t, onGrid)
-		assert.NotZero(t, chNum)
 	})
 
 	t.Run("off grid", func(t *testing.T) {

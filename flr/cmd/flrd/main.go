@@ -116,7 +116,6 @@ func run(logger *slog.Logger) error {
 	logger.Info("flrd ready",
 		"operator", *flagOperator,
 		"http", *flagHTTP,
-		"grpc", *flagGRPC,
 		"data", *flagDataDir,
 	)
 

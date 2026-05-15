@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/otap/flr/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,7 @@ import (
 )
 
 // generateTestKeyPair generates a key pair for testing.
-func generateTestKeyPair(t *testing.T) (*ecdsa.PrivateKey, []byte, []byte) {
+func generateTestKeyPair(t testing.TB) (*ecdsa.PrivateKey, []byte, []byte) {
 	t.Helper()
 	privKey, privPEM, pubPEM, err := GenerateKeyPair()
 	require.NoError(t, err)
@@ -27,7 +28,7 @@ func generateTestKeyPair(t *testing.T) (*ecdsa.PrivateKey, []byte, []byte) {
 }
 
 // createTestEngine creates a crypto engine for testing.
-func createTestEngine(t *testing.T) (*Engine, []byte) {
+func createTestEngine(t testing.TB) (*Engine, []byte) {
 	t.Helper()
 	_, privPEM, pubPEM := generateTestKeyPair(t)
 	engine, err := NewEngine("test-operator", privPEM)
@@ -613,7 +614,7 @@ func TestSignMerkleCommitment(t *testing.T) {
 
 func TestVerifyMerkleCommitment(t *testing.T) {
 	engine, pubPEM := createTestEngine(t)
-	_, wrongPubPEM, _ := generateTestKeyPair(t)
+	_, _, wrongPubPEM := generateTestKeyPair(t)
 
 	root := make([]byte, 32)
 	rand.Read(root)

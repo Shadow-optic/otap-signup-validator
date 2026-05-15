@@ -63,7 +63,10 @@ func TestLeaseLifecycle(t *testing.T) {
 	assert.Equal(t, lease.EndpointID, retrieved.EndpointID)
 	t.Log("Lease verification passed")
 
-	// Step 4: Renew lease (extend end time)
+	// Step 4: Renew lease (extend end time). Capture the pre-renew end time
+	// against a fresh fetch — `lease.EndTime` may share state with the store
+	// in some implementations and shift under us when we call UpdateLease.
+	originalEndTime := retrieved.EndTime
 	retrieved.EndTime = retrieved.EndTime.Add(30 * 24 * time.Hour)
 	retrieved.UpdatedAt = time.Now().UTC()
 	err = store.UpdateLease(retrieved)
@@ -71,7 +74,7 @@ func TestLeaseLifecycle(t *testing.T) {
 
 	renewed, err := store.GetLease(lease.ID)
 	require.NoError(t, err)
-	assert.True(t, renewed.EndTime.After(lease.EndTime), "renewed end time should be after original")
+	assert.True(t, renewed.EndTime.After(originalEndTime), "renewed end time should be after original")
 	t.Logf("Renewed lease until: %s", renewed.EndTime.Format(time.RFC3339))
 
 	// Step 5: Revoke lease

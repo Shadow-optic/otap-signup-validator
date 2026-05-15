@@ -4,6 +4,7 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -290,7 +291,19 @@ func buildMerkleTreeFromLeaves(nodes []*models.MerkleNode) *models.MerkleNode {
 
 	parents := make([]*models.MerkleNode, 0, len(nodes)/2)
 	for i := 0; i < len(nodes); i += 2 {
-		combined := append(nodes[i].Hash, nodes[i+1].Hash...)
+		// Hash siblings in deterministic lexicographic order so the
+		// content-addressed verifier (VerifyMerkleProof) — which sorts
+		// without knowing the original left/right structure — gets the
+		// same byte stream as the builder.
+		left, right := nodes[i].Hash, nodes[i+1].Hash
+		var combined []byte
+		if bytes.Compare(left, right) <= 0 {
+			combined = append(combined, left...)
+			combined = append(combined, right...)
+		} else {
+			combined = append(combined, right...)
+			combined = append(combined, left...)
+		}
 		h := sha3.Sum256(combined)
 		parents = append(parents, &models.MerkleNode{
 			Hash:  h[:],

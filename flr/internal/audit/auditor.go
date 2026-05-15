@@ -3,7 +3,6 @@
 package audit
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -163,13 +162,18 @@ func (a *Auditor) GenerateAuditReport(from, to time.Time) (*AuditReport, error) 
 		})
 	}
 
-	// Get commitment count via audit log
-	auditEntries, err := a.store.GetAuditLog(from, to)
-	if err != nil {
-		a.logger.Error("failed to get audit log", "error", err)
-		return nil, fmt.Errorf("failed to get audit log: %w", err)
+	// Count commitments by checking each operator's latest commitment.
+	// (The Store interface doesn't expose a ListCommitments primitive.)
+	operators, opErr := a.store.ListOperators()
+	if opErr != nil {
+		a.logger.Error("failed to list operators", "error", opErr)
+		return nil, fmt.Errorf("failed to list operators: %w", opErr)
 	}
-	report.CommitmentCount = len(auditEntries)
+	for _, op := range operators {
+		if c, err := a.store.GetLatestCommitment(op.ID); err == nil && c != nil {
+			report.CommitmentCount++
+		}
+	}
 
 	return report, nil
 }

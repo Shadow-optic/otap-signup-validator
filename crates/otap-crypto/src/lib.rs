@@ -216,7 +216,7 @@ pub fn verify_trajectory(
             Ok(())
         }
         AuthMode::Topological => {
-            if expected.winding_number_s3() == observed.winding_number_s3() {
+            if expected.winding_number() == observed.winding_number() {
                 Ok(())
             } else {
                 Err(ProtocolError::AuthenticationFailure)

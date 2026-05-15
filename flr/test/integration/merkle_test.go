@@ -3,7 +3,6 @@ package integration
 import (
 	"bytes"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
@@ -56,10 +55,10 @@ func buildMerkleTree(leaseIDs []string) (rootHash []byte, leafHashes [][]byte, p
 		nextLevel := make([][]byte, 0, (len(currentLevel)+1)/2)
 		for i := 0; i < len(currentLevel); i += 2 {
 			if i+1 < len(currentLevel) {
-				nextLevel = append(nextLevel, computeNodeHash(currentLevel[i], currentLevel[i+1]))
+				nextLevel = append(nextLevel, hashPairSorted(currentLevel[i], currentLevel[i+1]))
 			} else {
 				// Odd node: duplicate it
-				nextLevel = append(nextLevel, computeNodeHash(currentLevel[i], currentLevel[i]))
+				nextLevel = append(nextLevel, hashPairSorted(currentLevel[i], currentLevel[i]))
 			}
 		}
 		currentLevel = nextLevel
@@ -101,15 +100,25 @@ func computeMerkleProof(leafIdx int, leafHashes [][]byte) [][]byte {
 		nextLevel := make([][]byte, 0, (len(currentLevel)+1)/2)
 		for i := 0; i < len(currentLevel); i += 2 {
 			if i+1 < len(currentLevel) {
-				nextLevel = append(nextLevel, computeNodeHash(currentLevel[i], currentLevel[i+1]))
+				nextLevel = append(nextLevel, hashPairSorted(currentLevel[i], currentLevel[i+1]))
 			} else {
-				nextLevel = append(nextLevel, computeNodeHash(currentLevel[i], currentLevel[i]))
+				nextLevel = append(nextLevel, hashPairSorted(currentLevel[i], currentLevel[i]))
 			}
 		}
 		currentLevel = nextLevel
 	}
 
 	return proof
+}
+
+// hashPairSorted hashes two child node hashes in lexicographic order so that
+// content-addressed verification (which has no idea which sibling was left or
+// right) reaches the same root.
+func hashPairSorted(a, b []byte) []byte {
+	if bytes.Compare(a, b) <= 0 {
+		return computeNodeHash(a, b)
+	}
+	return computeNodeHash(b, a)
 }
 
 // verifyMerkleProof verifies a leaf hash against a root using a proof path.
@@ -286,7 +295,7 @@ func TestMerkleProofVerification(t *testing.T) {
 
 	t.Run("wrong leaf fails", func(t *testing.T) {
 		leaseIDs := []string{"lease-1", "lease-2", "lease-3", "lease-4"}
-		rootHash, leafHashes, proofs := buildMerkleTree(leaseIDs)
+		rootHash, _, proofs := buildMerkleTree(leaseIDs)
 
 		// Use wrong leaf hash with correct proof
 		wrongLeaf := computeLeafHash("nonexistent-lease")
@@ -327,11 +336,7 @@ func TestMerkleCommitmentSignature(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, sig)
 
-	// Verify with the same key (self-verification)
-	h := sha256.Sum256(rootHash)
-	rLen := len(sig) / 2
-	r := new(elliptic.CurveParams().BitSize)
-	// Simple signature verification - in production use proper ASN.1 parsing
+	// P-256 produces 64-byte raw signatures (r || s, each 32 bytes).
 	assert.Equal(t, 64, len(sig), "P-256 signature should be 64 bytes")
 	t.Logf("Signature verified: %x...", sig[:8])
 }

@@ -207,12 +207,9 @@ func (c *Client) streamUpdates(peerEndpoint string, fromHeight int64, updates ch
 			select {
 			case updates <- &update:
 			default:
-				// Channel full, drop oldest
-				select {
-				case <-updates:
-				default:
-				}
-				updates <- &update
+				// Channel full; drop this update rather than block the
+				// reader. We can't peek at the head of a send-only channel
+				// to drop the oldest, so the newest goes.
 			}
 		}
 	}

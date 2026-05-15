@@ -130,25 +130,77 @@ impl PolarizationTrajectory {
         Self { samples }
     }
 
-    /// Compute the discrete winding number of the trajectory around the s3 axis.
+    /// Compute the discrete winding number of the trajectory around its own
+    /// principal axis.
     ///
-    /// This is the *topological* authenticator: it is invariant under arbitrary
-    /// unitary transforms of the Poincaré sphere (i.e., invariant under PMD).
-    /// The receiver can compute this without knowing the fiber's current Jones
-    /// matrix — making D3 authentication PMD-robust.
+    /// This is the *topological* authenticator: it is invariant under
+    /// arbitrary unitary transforms of the Poincaré sphere (PMD). The
+    /// principal axis — the signed sum of consecutive cross products — is
+    /// covariant under SO(3), and the winding measured in the plane
+    /// perpendicular to it is therefore preserved.
     ///
-    /// See `docs/architecture.md` §4.2 for the topology argument.
-    pub fn winding_number_s3(&self) -> i32 {
-        // Project each sample onto the s1-s2 equatorial plane and compute the
-        // total angular change. Sum of signed angle increments / 2π.
-        let mut total_angle: f32 = 0.0;
-        for i in 0..TRAJECTORY_SAMPLES {
+    /// The original implementation projected onto the s1-s2 plane and counted
+    /// revolutions around the *fixed* s3 axis. That is only invariant under
+    /// rotations about s3, not under arbitrary PMD.
+    ///
+    /// Returns 0 for degenerate trajectories (no well-defined axis).
+    pub fn winding_number(&self) -> i32 {
+        let n = TRAJECTORY_SAMPLES;
+
+        let mut axis = [0.0f32; 3];
+        for i in 0..n {
             let a = &self.samples[i];
-            let b = &self.samples[(i + 1) % TRAJECTORY_SAMPLES];
-            let theta_a = a.s2.atan2(a.s1);
-            let theta_b = b.s2.atan2(b.s1);
+            let b = &self.samples[(i + 1) % n];
+            axis[0] += a.s2 * b.s3 - a.s3 * b.s2;
+            axis[1] += a.s3 * b.s1 - a.s1 * b.s3;
+            axis[2] += a.s1 * b.s2 - a.s2 * b.s1;
+        }
+        let axis_norm =
+            (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        if axis_norm < 1e-6 {
+            return 0;
+        }
+        let axis = [axis[0] / axis_norm, axis[1] / axis_norm, axis[2] / axis_norm];
+
+        // Pick a world axis that's least aligned with `axis` to get a numerically
+        // stable cross product. The choice is deterministic but axis-dependent;
+        // the winding number itself is invariant to which world axis we pick
+        // because changing it just rotates (u, v) within the perpendicular plane
+        // by a fixed offset.
+        let ax_abs = [axis[0].abs(), axis[1].abs(), axis[2].abs()];
+        let world = if ax_abs[0] <= ax_abs[1] && ax_abs[0] <= ax_abs[2] {
+            [1.0f32, 0.0, 0.0]
+        } else if ax_abs[1] <= ax_abs[2] {
+            [0.0f32, 1.0, 0.0]
+        } else {
+            [0.0f32, 0.0, 1.0]
+        };
+        let mut u = [
+            axis[1] * world[2] - axis[2] * world[1],
+            axis[2] * world[0] - axis[0] * world[2],
+            axis[0] * world[1] - axis[1] * world[0],
+        ];
+        let un = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(1e-9);
+        u[0] /= un;
+        u[1] /= un;
+        u[2] /= un;
+        let v = [
+            axis[1] * u[2] - axis[2] * u[1],
+            axis[2] * u[0] - axis[0] * u[2],
+            axis[0] * u[1] - axis[1] * u[0],
+        ];
+
+        let mut total_angle: f32 = 0.0;
+        for i in 0..n {
+            let a = &self.samples[i];
+            let b = &self.samples[(i + 1) % n];
+            let au = a.s1 * u[0] + a.s2 * u[1] + a.s3 * u[2];
+            let av = a.s1 * v[0] + a.s2 * v[1] + a.s3 * v[2];
+            let bu = b.s1 * u[0] + b.s2 * u[1] + b.s3 * u[2];
+            let bv = b.s1 * v[0] + b.s2 * v[1] + b.s3 * v[2];
+            let theta_a = av.atan2(au);
+            let theta_b = bv.atan2(bu);
             let mut d = theta_b - theta_a;
-            // Wrap to (-π, π]
             while d > core::f32::consts::PI {
                 d -= 2.0 * core::f32::consts::PI;
             }
@@ -304,7 +356,7 @@ mod tests {
             samples[i] = StokesVector::new(theta.cos(), theta.sin(), 0.0);
         }
         let traj = PolarizationTrajectory::new(samples);
-        assert_eq!(traj.winding_number_s3(), 1);
+        assert_eq!(traj.winding_number(), 1);
     }
 
     #[test]
@@ -316,7 +368,7 @@ mod tests {
             samples[i] = StokesVector::new(theta.cos(), theta.sin(), 0.0);
         }
         let traj = PolarizationTrajectory::new(samples);
-        assert_eq!(traj.winding_number_s3(), 2);
+        assert_eq!(traj.winding_number(), 2);
     }
 
     #[test]

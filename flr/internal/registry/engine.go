@@ -52,7 +52,7 @@ func (e *Engine) AllocateLease(wavelength *models.Wavelength, endpointID string,
 	now := time.Now().UTC()
 
 	// Check for conflicts
-	conflict, found := e.CheckConflict(wavelength, "")
+	conflict, found := e.checkConflictLocked(wavelength, "")
 	if found {
 		return nil, nil, fmt.Errorf("wavelength conflict detected with lease %s", conflict.ID)
 	}
@@ -182,14 +182,18 @@ func (e *Engine) RevokeLease(leaseID string) error {
 // It searches for any active lease on the same wavelength that overlaps in time.
 // If excludeLeaseID is provided, that lease is excluded from the check (for renewals).
 func (e *Engine) CheckConflict(wavelength *models.Wavelength, excludeLeaseID string) (*models.Lease, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.checkConflictLocked(wavelength, excludeLeaseID)
+}
+
+// checkConflictLocked is the lock-free body of CheckConflict, callable from
+// methods that already hold e.mu (which doesn't support recursive locking).
+func (e *Engine) checkConflictLocked(wavelength *models.Wavelength, excludeLeaseID string) (*models.Lease, bool) {
 	if wavelength == nil {
 		return nil, false
 	}
 
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	// List all active leases
 	leases, err := e.store.ListLeases(LeaseFilter{
 		OperatorID: e.operatorID,
 		Status:     models.LeaseStatusActive,
@@ -202,12 +206,9 @@ func (e *Engine) CheckConflict(wavelength *models.Wavelength, excludeLeaseID str
 	wlKey := wavelength.ToKey()
 
 	for _, lease := range leases {
-		// Skip the excluded lease
 		if lease.ID == excludeLeaseID {
 			continue
 		}
-
-		// Check wavelength match and time overlap
 		if lease.Wavelength != nil && lease.Wavelength.ToKey() == wlKey {
 			if now.Before(lease.EndTime) {
 				return lease, true
@@ -373,6 +374,43 @@ func (e *Engine) GetBlockHeight() int64 {
 	defer e.mu.RUnlock()
 
 	return e.blockHeight
+}
+
+// Store returns the underlying store. Used by federation/audit packages that
+// need read access to leases, commitments, and operators that aren't exposed
+// as engine methods.
+func (e *Engine) Store() Store {
+	return e.store
+}
+
+// ListLeases is a thin pass-through to the store's ListLeases.
+func (e *Engine) ListLeases(filter LeaseFilter) ([]*models.Lease, error) {
+	return e.store.ListLeases(filter)
+}
+
+// GetLease is a thin pass-through to the store.
+func (e *Engine) GetLease(leaseID string) (*models.Lease, error) {
+	return e.store.GetLease(leaseID)
+}
+
+// GetCommitment is a thin pass-through to the store.
+func (e *Engine) GetCommitment(operatorID string, blockHeight int64) (*models.MerkleCommitment, error) {
+	return e.store.GetCommitment(operatorID, blockHeight)
+}
+
+// CreateOperator is a thin pass-through to the store.
+func (e *Engine) CreateOperator(op *models.Operator) error {
+	return e.store.CreateOperator(op)
+}
+
+// GetOperator is a thin pass-through to the store.
+func (e *Engine) GetOperator(operatorID string) (*models.Operator, error) {
+	return e.store.GetOperator(operatorID)
+}
+
+// ListOperators is a thin pass-through to the store.
+func (e *Engine) ListOperators() ([]*models.Operator, error) {
+	return e.store.ListOperators()
 }
 
 // hashToken returns a hash of the token's canonical fields.
