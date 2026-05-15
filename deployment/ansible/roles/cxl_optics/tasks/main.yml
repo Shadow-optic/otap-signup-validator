@@ -1,0 +1,9 @@
+---
+- name: Configure CXL 4.0 optical links
+  command: cxl-tool configure --link-speed 64GT/s --lanes {{ cxl_optical_lane_count }} --pool-id {{ multi_host_pool_id }}
+
+- name: Enable multi-host CXL pooling
+  command: cxl-tool pool-create --id {{ multi_host_pool_id }} --mode {{ multi_host_sharing_mode }}
+
+- name: Bind PhotonForge optical ports to CXL 4.0
+  command: photonforge-bind --cxl-optical --bar-base 0xDEADBEEF0000

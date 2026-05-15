@@ -1,0 +1,33 @@
+host_control:
+  cache_policy: Streaming
+  mmio_bar_base: 0xDEADBEEF0000
+  ring_depth: 1024
+  slot_stride: 256
+  pcie_mps: 4096
+  pcie_mrrs: 4096
+compute_offload:
+  target: photonforge_pfpga
+  gpu_count: 4
+  lane_count: 80
+  p2p_enabled: true
+  chips: 4
+cxl_pool:
+  enabled: true
+  dax_device: "/dev/dax0.0"
+  pool_size_tb: 32
+  coherency_mode: cxl_cache
+  cxl_version: "4.0"
+  optical_link_speed_gt_s: 64
+  optical_lane_count: 16
+  multi_host_pool_id: "POOL-CHI-NYC-001"
+photonforge:
+  enabled: true
+  puc_count: 256
+  oam_mode_range: "-32..+32"
+  inter_chip_link: uci_e_optical
+  pfcp_enabled: true
+  stokes_invariant_key_ref: "HSM-KEY-001"
+  calibration:
+    type: thermal_electrical
+    lut_version: "1.0"
+    wafer_test_data_ref: "WAFER-LOT-20260514"
