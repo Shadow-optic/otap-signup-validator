@@ -51,8 +51,8 @@ func (e *Engine) AllocateLease(wavelength *models.Wavelength, endpointID string,
 
 	now := time.Now().UTC()
 
-	// Check for conflicts
-	conflict, found := e.CheckConflict(wavelength, "")
+	// Check for conflicts (use internal version — write lock already held)
+	conflict, found := e.checkConflictLocked(wavelength, "")
 	if found {
 		return nil, nil, fmt.Errorf("wavelength conflict detected with lease %s", conflict.ID)
 	}
@@ -178,18 +178,13 @@ func (e *Engine) RevokeLease(leaseID string) error {
 	return nil
 }
 
-// CheckConflict checks for double-allocation of a wavelength.
-// It searches for any active lease on the same wavelength that overlaps in time.
-// If excludeLeaseID is provided, that lease is excluded from the check (for renewals).
-func (e *Engine) CheckConflict(wavelength *models.Wavelength, excludeLeaseID string) (*models.Lease, bool) {
+// checkConflictLocked checks for double-allocation without acquiring the lock.
+// Caller must hold at least a read lock on e.mu.
+func (e *Engine) checkConflictLocked(wavelength *models.Wavelength, excludeLeaseID string) (*models.Lease, bool) {
 	if wavelength == nil {
 		return nil, false
 	}
 
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	// List all active leases
 	leases, err := e.store.ListLeases(LeaseFilter{
 		OperatorID: e.operatorID,
 		Status:     models.LeaseStatusActive,
@@ -202,12 +197,9 @@ func (e *Engine) CheckConflict(wavelength *models.Wavelength, excludeLeaseID str
 	wlKey := wavelength.ToKey()
 
 	for _, lease := range leases {
-		// Skip the excluded lease
 		if lease.ID == excludeLeaseID {
 			continue
 		}
-
-		// Check wavelength match and time overlap
 		if lease.Wavelength != nil && lease.Wavelength.ToKey() == wlKey {
 			if now.Before(lease.EndTime) {
 				return lease, true
@@ -216,6 +208,14 @@ func (e *Engine) CheckConflict(wavelength *models.Wavelength, excludeLeaseID str
 	}
 
 	return nil, false
+}
+
+// CheckConflict checks for double-allocation of a wavelength.
+// If excludeLeaseID is provided, that lease is excluded from the check (for renewals).
+func (e *Engine) CheckConflict(wavelength *models.Wavelength, excludeLeaseID string) (*models.Lease, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.checkConflictLocked(wavelength, excludeLeaseID)
 }
 
 // BuildMerkleTree builds a Merkle tree from all active leases.
@@ -390,6 +390,51 @@ func hashToken(token *models.LeaseToken) []byte {
 
 	h := sha3.Sum256([]byte(data))
 	return h[:]
+}
+
+// Store returns the underlying Store for direct access by trusted internal callers.
+func (e *Engine) Store() Store { return e.store }
+
+// GetLease retrieves a lease by ID.
+func (e *Engine) GetLease(leaseID string) (*models.Lease, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store.GetLease(leaseID)
+}
+
+// ListLeases returns leases matching the given filter.
+func (e *Engine) ListLeases(filter LeaseFilter) ([]*models.Lease, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store.ListLeases(filter)
+}
+
+// GetCommitment retrieves a commitment by operator ID and block height.
+func (e *Engine) GetCommitment(operatorID string, blockHeight int64) (*models.MerkleCommitment, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store.GetCommitment(operatorID, blockHeight)
+}
+
+// CreateOperator persists a new operator record.
+func (e *Engine) CreateOperator(op *models.Operator) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.store.CreateOperator(op)
+}
+
+// GetOperator retrieves an operator by ID.
+func (e *Engine) GetOperator(id string) (*models.Operator, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store.GetOperator(id)
+}
+
+// ListOperators returns all registered operators.
+func (e *Engine) ListOperators() ([]*models.Operator, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store.ListOperators()
 }
 
 // appendAuditLog appends an entry to the audit log.

@@ -235,12 +235,12 @@ func TestValidateITUCompliance(t *testing.T) {
 	}{
 		{
 			name:    "valid C-band 1550.12nm on 50GHz",
-			wl:      createWavelength(1550.12, 4, models.BandCBand, 50.0),
+			wl:      createWavelength(1550.12, 6, models.BandCBand, 50.0),
 			wantErr: false,
 		},
 		{
 			name:    "valid C-band 1530.33nm on 50GHz",
-			wl:      createWavelength(1530.33, -34, models.BandCBand, 50.0),
+			wl:      createWavelength(1530.33, 56, models.BandCBand, 50.0),
 			wantErr: false,
 		},
 		{

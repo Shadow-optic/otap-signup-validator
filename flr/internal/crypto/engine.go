@@ -290,12 +290,18 @@ func buildMerkleTreeFromLeaves(nodes []*models.MerkleNode) *models.MerkleNode {
 
 	parents := make([]*models.MerkleNode, 0, len(nodes)/2)
 	for i := 0; i < len(nodes); i += 2 {
-		combined := append(nodes[i].Hash, nodes[i+1].Hash...)
+		left, right := nodes[i], nodes[i+1]
+		var combined []byte
+		if string(left.Hash) <= string(right.Hash) {
+			combined = append(left.Hash, right.Hash...)
+		} else {
+			combined = append(right.Hash, left.Hash...)
+		}
 		h := sha3.Sum256(combined)
 		parents = append(parents, &models.MerkleNode{
 			Hash:  h[:],
-			Left:  nodes[i],
-			Right: nodes[i+1],
+			Left:  left,
+			Right: right,
 		})
 	}
 

@@ -1,6 +1,7 @@
 package xlat
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/otap/flr/internal/models"
 	"github.com/otap/flr/internal/registry"
 )
@@ -225,7 +227,7 @@ func TestManager_CreateTranslation_Conflict(t *testing.T) {
 			GridGHz:    25.0,
 		},
 	}
-	if store.CreateLease(lease != nil { t.Fatalf("unexpected error: %v", store.CreateLease(lease) })
+	if err := store.CreateLease(lease); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	_, err := mgr.CreateTranslation("op-001", "op-002", fromWL, toWL, 1, 2, time.Hour)
 	if err == nil { t.Error("expected error, got nil") }
@@ -274,7 +276,7 @@ func TestManager_GenerateAWGTable(t *testing.T) {
 	if err != nil { t.Fatalf("unexpected error: %v", err) }
 	if "junc-1" != table.JunctionID { t.Errorf("expected %v, got %v", "junc-1", table.JunctionID) }
 	if "op-001" != table.OperatorID { t.Errorf("expected %v, got %v", "op-001", table.OperatorID) }
-	if table.GeneratedAt == nil { t.Fatal("expected non-nil, got nil") }
+	if table.GeneratedAt.IsZero() { t.Fatal("expected non-zero GeneratedAt") }
 	if len(table.Entries) != 0 { t.Errorf("expected empty, got %d items", len(table.Entries)) } // No translations yet
 	if table.MerkleRoot != nil { t.Errorf("expected nil, got %v", table.MerkleRoot) }
 }
@@ -479,7 +481,7 @@ func TestManager_ValidateTranslation_ConflictingLease(t *testing.T) {
 			GridGHz:    25.0,
 		},
 	}
-	if store.CreateLease(lease != nil { t.Fatalf("unexpected error: %v", store.CreateLease(lease) })
+	if err := store.CreateLease(lease); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	entry := &models.TranslationEntry{
 		FromOperator: "op-001",
@@ -583,7 +585,7 @@ func TestWavelengthsEqual(t *testing.T) {
 		Band:       models.BandCBand,
 		GridGHz:    25.0,
 	}
-	if !wavelengthsEqual(a, b { t.Error("expected true, got false") })
+	if !wavelengthsEqual(a, b) { t.Error("expected true, got false") }
 }
 
 func TestWavelengthsEqual_DifferentLambda(t *testing.T) {
@@ -597,7 +599,7 @@ func TestWavelengthsEqual_DifferentLambda(t *testing.T) {
 		ChannelNum: 32,
 		Band:       models.BandCBand,
 	}
-	if wavelengthsEqual(a, b { t.Error("expected false, got true") })
+	if wavelengthsEqual(a, b) { t.Error("expected false, got true") }
 }
 
 func TestWavelengthsEqual_Nil(t *testing.T) {
@@ -606,9 +608,9 @@ func TestWavelengthsEqual_Nil(t *testing.T) {
 		ChannelNum: 32,
 		Band:       models.BandCBand,
 	}
-	if wavelengthsEqual(a, nil { t.Error("expected false, got true") })
-	if wavelengthsEqual(nil, a { t.Error("expected false, got true") })
-	if wavelengthsEqual(nil, nil { t.Error("expected false, got true") })
+	if wavelengthsEqual(a, nil) { t.Error("expected false, got true") }
+	if wavelengthsEqual(nil, a) { t.Error("expected false, got true") }
+	if wavelengthsEqual(nil, nil) { t.Error("expected false, got true") }
 }
 
 func TestComputeMerkleRoot(t *testing.T) {
@@ -623,7 +625,7 @@ func TestComputeMerkleRoot(t *testing.T) {
 
 	// Same entries should produce same root
 	root2 := computeMerkleRoot(entries)
-	if root1 != root2 { t.Errorf("expected %v, got %v", root1, root2) }
+	if !bytes.Equal(root1, root2) { t.Errorf("expected equal roots, got %x vs %x", root1, root2) }
 
 	// Different entries should produce different root
 	entries[0].InputPort = 99
@@ -705,8 +707,8 @@ func TestAWGRoutingTable_JSONRoundTrip(t *testing.T) {
 	if table.OperatorID != decoded.OperatorID { t.Errorf("expected %v, got %v", table.OperatorID, decoded.OperatorID) }
 	if len(decoded.Entries) != 1 { t.Errorf("expected length %d, got %d", 1, len(decoded.Entries)) }
 	if table.Entries[0].InputPort != decoded.Entries[0].InputPort { t.Errorf("expected %v, got %v", table.Entries[0].InputPort, decoded.Entries[0].InputPort) }
-	if table.MerkleRoot != decoded.MerkleRoot { t.Errorf("expected %v, got %v", table.MerkleRoot, decoded.MerkleRoot) }
-	if table.Signature != decoded.Signature { t.Errorf("expected %v, got %v", table.Signature, decoded.Signature) }
+	if !bytes.Equal(table.MerkleRoot, decoded.MerkleRoot) { t.Errorf("expected equal MerkleRoot, got %x vs %x", table.MerkleRoot, decoded.MerkleRoot) }
+	if !bytes.Equal(table.Signature, decoded.Signature) { t.Errorf("expected equal Signature, got %x vs %x", table.Signature, decoded.Signature) }
 }
 
 func TestTranslationFilter_Usage(t *testing.T) {
@@ -742,7 +744,7 @@ func TestManager_CreateTranslation_ManyTranslations(t *testing.T) {
 			fmt.Sprintf("op-%03d", i),
 			fmt.Sprintf("op-%03d", i+1),
 			fromWL, toWL,
-			int32(i), int32(i+1),
+			int32(i+1), int32(i+2),
 			time.Hour,
 		)
 		if err != nil { t.Fatalf("unexpected error: %v", err) }
@@ -776,7 +778,7 @@ func TestManager_ConcurrentCreateTranslation(t *testing.T) {
 				fmt.Sprintf("op-%03d", idx),
 				fmt.Sprintf("op-%03d", idx+1),
 				fromWL, toWL,
-				int32(idx), int32(idx+1),
+				int32(idx+1), int32(idx+2),
 				time.Hour,
 			)
 			assert.NoError(t, err)

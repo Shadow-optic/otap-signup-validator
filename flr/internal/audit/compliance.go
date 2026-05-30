@@ -46,8 +46,8 @@ func IsOnGrid(lambdaNm float64, gridGHz float64, referenceNm float64) bool {
 	// Round to nearest grid slot
 	slot := diff / (gridGHz / 1000.0)
 	nearest := math.Round(slot) * (gridGHz / 1000.0)
-	// Allow 0.0001 THz tolerance for floating point
-	return math.Abs(diff-nearest) < 0.0001
+	// Allow 1 GHz tolerance for 2-decimal-place wavelength rounding (e.g. 1550.12 nm = ch6)
+	return math.Abs(diff-nearest) < 0.001
 }
 
 // ChannelNumberFromWavelength calculates the ITU-T channel number from a wavelength.

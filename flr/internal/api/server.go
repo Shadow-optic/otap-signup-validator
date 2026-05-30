@@ -166,19 +166,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// setupGateway creates and configures the gRPC-gateway
-func (s *Server) setupGateway(ctx context.Context) (*runtime.ServeMux, error) {
-	mux := runtime.NewServeMux(
-		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{}),
-	)
-
-	if err := flrv1.RegisterFederatedRegistryHandlerServer(ctx, mux, s); err != nil {
-		return nil, fmt.Errorf("failed to register gateway handlers: %w", err)
-	}
-
-	return mux, nil
-}
-
 // ===== Lease Methods =====
 
 // CreateLease creates a new wavelength lease
@@ -339,17 +326,10 @@ func (s *Server) VerifyLease(ctx context.Context, req *flrv1.VerifyLeaseRequest)
 	}
 
 	token := leaseTokenFromProto(req.GetToken())
-	result, err := s.registry.VerifyLease(token)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "verification failed: %v", err)
+	if err := s.registry.VerifyLease(token); err != nil {
+		return &flrv1.VerificationResult{Valid: false, Reason: err.Error()}, nil
 	}
-
-	return &flrv1.VerificationResult{
-		Valid:       result.Valid,
-		Reason:      result.Reason,
-		ComputedHash: result.ComputedHash,
-		StoredHash:  result.StoredHash,
-	}, nil
+	return &flrv1.VerificationResult{Valid: true}, nil
 }
 
 // SubmitProofOfInvalidity processes a proof of invalidity
@@ -461,7 +441,7 @@ func (s *Server) CreateTranslation(ctx context.Context, req *flrv1.CreateTransla
 		"from_op", req.GetFromOperator(),
 		"to_op", req.GetToOperator())
 
-	if req.GetFromOperator() == nil || req.GetToOperator() == nil {
+	if req.GetFromOperator() == "" || req.GetToOperator() == "" {
 		return nil, status.Error(codes.InvalidArgument, "from_operator and to_operator wavelength info required")
 	}
 

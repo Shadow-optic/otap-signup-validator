@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/otap/flr/internal/crypto"
 	"github.com/otap/flr/internal/models"
 	"github.com/otap/flr/internal/registry"
@@ -216,26 +218,30 @@ func (p *testPeer) Close() {
 
 func setupTestManager(t *testing.T) (*Manager, *mockStore) {
 	store := newMockStore()
-	cryptoEng, err := crypto.NewEngine("op-001")
+	_, privPEM, _, err := crypto.GenerateKeyPair()
 	if err != nil { t.Fatalf("unexpected error: %v", err) }
-	regEngine := registry.NewEngine(store, "op-001")
+	cryptoEng, err := crypto.NewEngine("op-001", privPEM)
+	if err != nil { t.Fatalf("unexpected error: %v", err) }
+	regEngine := registry.NewEngine(store, cryptoEng, "op-001")
 	client := NewClient(5 * time.Second)
 	mgr := NewManager(regEngine, cryptoEng, client, "op-001")
 	return mgr, store
 }
 
 func TestNewManager(t *testing.T) {
-	cryptoEng, err := crypto.NewEngine("op-001")
+	_, privPEM, _, err := crypto.GenerateKeyPair()
+	if err != nil { t.Fatalf("unexpected error: %v", err) }
+	cryptoEng, err := crypto.NewEngine("op-001", privPEM)
 	if err != nil { t.Fatalf("unexpected error: %v", err) }
 	store := newMockStore()
-	regEngine := registry.NewEngine(store, "op-001")
+	regEngine := registry.NewEngine(store, cryptoEng, "op-001")
 	client := NewClient(5 * time.Second)
 	mgr := NewManager(regEngine, cryptoEng, client, "op-001")
 
 	if mgr == nil { t.Fatal("expected non-nil, got nil") }
 	if "op-001" != mgr.operatorID { t.Errorf("expected %v, got %v", "op-001", mgr.operatorID) }
 	if mgr.operators == nil { t.Fatal("expected non-nil, got nil") }
-	if len(mgr.ListOperators() != 0 { t.Errorf("expected empty, got %d items", len(mgr.ListOperators()) })
+	if len(mgr.ListOperators()) != 0 { t.Errorf("expected empty, got %d items", len(mgr.ListOperators())) }
 }
 
 func TestManager_RegisterOperator(t *testing.T) {
@@ -301,7 +307,7 @@ func TestManager_RegisterOperator_Duplicate(t *testing.T) {
 		Endpoint: "https://op-b.example.com",
 	}
 
-	if mgr.RegisterOperator(op != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(op) })
+	if err := mgr.RegisterOperator(op); err != nil { t.Fatalf("unexpected error: %v", err) }
 	err := mgr.RegisterOperator(op)
 	if err == nil { t.Error("expected error, got nil") }
 	if !strings.Contains(err.Error(), "already registered") { t.Errorf("expected error containing %q, got %q", "already registered", err.Error()) }
@@ -321,24 +327,16 @@ func TestManager_ListOperators(t *testing.T) {
 	ops := mgr.ListOperators()
 	if len(ops) != 0 { t.Errorf("expected empty, got %d items", len(ops)) }
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
 		Endpoint: "https://op-b.example.com",
-	} != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: "https://op-b.example.com",
-	}) })
-	if mgr.RegisterOperator(&models.Operator{
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-003",
 		Name:     "Operator C",
 		Endpoint: "https://op-c.example.com",
-	} != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-003",
-		Name:     "Operator C",
-		Endpoint: "https://op-c.example.com",
-	}) })
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	ops = mgr.ListOperators()
 	if len(ops) != 2 { t.Errorf("expected length %d, got %d", 2, len(ops)) }
@@ -347,15 +345,11 @@ func TestManager_ListOperators(t *testing.T) {
 func TestManager_RemoveOperator(t *testing.T) {
 	mgr, _ := setupTestManager(t)
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
 		Endpoint: "https://op-b.example.com",
-	} != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: "https://op-b.example.com",
-	}) })
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	err := mgr.RemoveOperator("op-002")
 	if err != nil { t.Fatalf("unexpected error: %v", err) }
@@ -385,14 +379,11 @@ func TestManager_DetectConflicts_DoubleAllocation(t *testing.T) {
 	peer := newTestPeer()
 	defer peer.Close()
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
-		Endpoint: peer.URL( != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: peer.URL() },
-	}))
+		Endpoint: peer.URL(),
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	localLease := &models.Lease{
 		ID:         "lease-1",
@@ -406,7 +397,7 @@ func TestManager_DetectConflicts_DoubleAllocation(t *testing.T) {
 		StartTime: time.Now().UTC().Add(-time.Hour),
 		EndTime:   time.Now().UTC().Add(time.Hour),
 	}
-	if store.CreateLease(localLease != nil { t.Fatalf("unexpected error: %v", store.CreateLease(localLease) })
+	if err := store.CreateLease(localLease); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	remoteLease := &models.Lease{
 		ID:         "lease-2",
@@ -442,14 +433,11 @@ func TestManager_DetectConflicts_NoOverlap(t *testing.T) {
 	peer := newTestPeer()
 	defer peer.Close()
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
-		Endpoint: peer.URL( != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: peer.URL() },
-	}))
+		Endpoint: peer.URL(),
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	localLease := &models.Lease{
 		ID:         "lease-1",
@@ -463,7 +451,7 @@ func TestManager_DetectConflicts_NoOverlap(t *testing.T) {
 		StartTime: time.Now().UTC().Add(-time.Hour),
 		EndTime:   time.Now().UTC().Add(time.Hour),
 	}
-	if store.CreateLease(localLease != nil { t.Fatalf("unexpected error: %v", store.CreateLease(localLease) })
+	if err := store.CreateLease(localLease); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	remoteLease := &models.Lease{
 		ID:         "lease-2",
@@ -502,15 +490,11 @@ func TestManager_DetectConflicts_NoPeers(t *testing.T) {
 func TestManager_DetectConflicts_PeerOffline(t *testing.T) {
 	mgr, store := setupTestManager(t)
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
-		Endpoint: "http://127.0.0.1:1", // Should fail
-	} != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: "http://127.0.0.1:1", // Should fail
-	}) })
+		Endpoint: "http://127.0.0.1:1",
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	store.listLeasesFn = func(filter registry.LeaseFilter) ([]*models.Lease, error) {
 		if filter.OperatorID == "op-001" {
@@ -687,22 +671,16 @@ func TestManager_PushCommitmentToAll(t *testing.T) {
 	peerC := newTestPeer()
 	defer peerC.Close()
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
-		Endpoint: peerB.URL( != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: peerB.URL() },
-	}))
-	if mgr.RegisterOperator(&models.Operator{
+		Endpoint: peerB.URL(),
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-003",
 		Name:     "Operator C",
-		Endpoint: peerC.URL( != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-003",
-		Name:     "Operator C",
-		Endpoint: peerC.URL() },
-	}))
+		Endpoint: peerC.URL(),
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	commitment := &models.MerkleCommitment{
 		OperatorID:  "op-001",
@@ -740,14 +718,11 @@ func TestManager_PushCommitmentToAll_InactivePeer(t *testing.T) {
 	peer := newTestPeer()
 	defer peer.Close()
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
-		Endpoint: peer.URL( != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: peer.URL() },
-	}))
+		Endpoint: peer.URL(),
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	// Mark peer as inactive
 	mgr.mu.Lock()
@@ -778,14 +753,11 @@ func TestManager_GetTranslationTable(t *testing.T) {
 		},
 	}
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
-		Endpoint: peer.URL( != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: peer.URL() },
-	}))
+		Endpoint: peer.URL(),
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	entries, err := mgr.GetTranslationTable("op-002")
 	if err != nil { t.Fatalf("unexpected error: %v", err) }
@@ -844,14 +816,11 @@ func TestManager_SyncWithOperator(t *testing.T) {
 	peer := newTestPeer()
 	defer peer.Close()
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
-		Endpoint: peer.URL( != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: peer.URL() },
-	}))
+		Endpoint: peer.URL(),
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	// Pre-create a commitment in our store
 	commitment := &models.MerkleCommitment{
@@ -859,7 +828,7 @@ func TestManager_SyncWithOperator(t *testing.T) {
 		RootHash:    []byte("root"),
 		BlockHeight: 5,
 	}
-	if store.SaveCommitment(commitment != nil { t.Fatalf("unexpected error: %v", store.SaveCommitment(commitment) })
+	if err := store.SaveCommitment(commitment); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	store.listLeasesFn = func(filter registry.LeaseFilter) ([]*models.Lease, error) {
 		if filter.OperatorID == "op-001" {
@@ -883,15 +852,11 @@ func TestManager_SyncWithOperator_NotFound(t *testing.T) {
 func TestManager_ConcurrentAccess(t *testing.T) {
 	mgr, _ := setupTestManager(t)
 
-	if mgr.RegisterOperator(&models.Operator{
+	if err := mgr.RegisterOperator(&models.Operator{
 		ID:       "op-002",
 		Name:     "Operator B",
 		Endpoint: "https://op-b.example.com",
-	} != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-		ID:       "op-002",
-		Name:     "Operator B",
-		Endpoint: "https://op-b.example.com",
-	}) })
+	}); err != nil { t.Fatalf("unexpected error: %v", err) }
 
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -923,12 +888,11 @@ func TestManager_ConcurrentRemove(t *testing.T) {
 	mgr, _ := setupTestManager(t)
 
 	for i := 0; i < 10; i++ {
-		if mgr.RegisterOperator(&models.Operator{
-			ID:       fmt.Sprintf("op-%d", i+10 != nil { t.Fatalf("unexpected error: %v", mgr.RegisterOperator(&models.Operator{
-			ID:       fmt.Sprintf("op-%d", i+10) },
+		if err := mgr.RegisterOperator(&models.Operator{
+			ID:       fmt.Sprintf("op-%d", i+10),
 			Name:     fmt.Sprintf("Op %d", i),
 			Endpoint: fmt.Sprintf("https://op%d.example.com", i),
-		}))
+		}); err != nil { t.Fatalf("unexpected error: %v", err) }
 	}
 
 	var wg sync.WaitGroup

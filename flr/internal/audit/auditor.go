@@ -3,7 +3,6 @@
 package audit
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -169,7 +168,11 @@ func (a *Auditor) GenerateAuditReport(from, to time.Time) (*AuditReport, error) 
 		a.logger.Error("failed to get audit log", "error", err)
 		return nil, fmt.Errorf("failed to get audit log: %w", err)
 	}
-	report.CommitmentCount = len(auditEntries)
+	for _, entry := range auditEntries {
+		if entry.Operation == "COMMIT_MERKLE" {
+			report.CommitmentCount++
+		}
+	}
 
 	return report, nil
 }

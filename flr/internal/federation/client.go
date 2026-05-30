@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/otap/flr/internal/models"
@@ -160,9 +161,9 @@ func (c *Client) StreamUpdates(peerEndpoint string, fromHeight int64) (<-chan *m
 	return updates, errors
 }
 
-func (c *Client) streamUpdates(peerEndpoint string, fromHeight int64, updates chan<- *models.RegistryUpdate, errCh chan<- error) {
-	defer close(updates)
+func (c *Client) streamUpdates(peerEndpoint string, fromHeight int64, updates chan *models.RegistryUpdate, errCh chan<- error) {
 	defer close(errCh)
+	defer close(updates)
 
 	url := fmt.Sprintf("%s/v1/stream?from_block_height=%d", peerEndpoint, fromHeight)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -198,7 +199,7 @@ func (c *Client) streamUpdates(peerEndpoint string, fromHeight int64, updates ch
 		// SSE data lines start with "data: "
 		const prefix = "data: "
 		if len(line) > len(prefix) && line[:len(prefix)] == prefix {
-			data := line[len(prefix):]
+			data := strings.TrimRight(line[len(prefix):], "\r\n")
 			var update models.RegistryUpdate
 			if err := json.Unmarshal([]byte(data), &update); err != nil {
 				errCh <- fmt.Errorf("decode stream update: %w", err)

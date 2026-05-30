@@ -48,7 +48,8 @@ func (m *MemoryStore) GetLease(id string) (*models.Lease, error) {
 	if !ok {
 		return nil, fmt.Errorf("lease not found: %s", id)
 	}
-	return l, nil
+	c := *l
+	return &c, nil
 }
 
 // UpdateLease updates a lease.

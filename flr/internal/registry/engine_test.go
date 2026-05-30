@@ -210,7 +210,8 @@ func (s *inMemoryStore) GetAuditLog(from, to time.Time) ([]*models.AuditLogEntry
 
 func createTestRegistryEngine(t *testing.T) (*Engine, *inMemoryStore) {
 	t.Helper()
-	_, privPEM, _ := crypto.GenerateKeyPair()
+	_, privPEM, _, kpErr := crypto.GenerateKeyPair()
+	require.NoError(t, kpErr)
 	cryptoEngine, err := crypto.NewEngine("test-operator", privPEM)
 	require.NoError(t, err)
 
@@ -231,7 +232,8 @@ func createTestWavelength() *models.Wavelength {
 // --- NewEngine Tests ---
 
 func TestNewEngine(t *testing.T) {
-	_, privPEM, _ := crypto.GenerateKeyPair()
+	_, privPEM, _, kpErr := crypto.GenerateKeyPair()
+	require.NoError(t, kpErr)
 	cryptoEngine, err := crypto.NewEngine("test-operator", privPEM)
 	require.NoError(t, err)
 
@@ -301,7 +303,7 @@ func TestEngine_AllocateLease(t *testing.T) {
 	})
 
 	t.Run("double allocation conflict", func(t *testing.T) {
-		wl := createTestWavelength()
+		wl := &models.Wavelength{LambdaNm: 1550.50, ChannelNum: 10, Band: models.BandCBand, GridGHz: 25.0}
 		_, _, err := engine.AllocateLease(wl, "ep-001", 1*time.Hour)
 		require.NoError(t, err)
 
@@ -346,7 +348,7 @@ func TestEngine_RenewLease(t *testing.T) {
 	})
 
 	t.Run("negative extension", func(t *testing.T) {
-		wl := createTestWavelength()
+		wl := &models.Wavelength{LambdaNm: 1550.60, ChannelNum: 11, Band: models.BandCBand, GridGHz: 25.0}
 		lease, _, err := engine.AllocateLease(wl, "ep-001", 1*time.Hour)
 		require.NoError(t, err)
 
@@ -421,10 +423,11 @@ func TestEngine_CheckConflict(t *testing.T) {
 
 	t.Run("no conflict for single lease", func(t *testing.T) {
 		wl := &models.Wavelength{LambdaNm: 1550.16, ChannelNum: 5, Band: models.BandCBand, GridGHz: 25.0}
-		_, _, err := engine.AllocateLease(wl, "ep-001", 1*time.Hour)
+		lease, _, err := engine.AllocateLease(wl, "ep-001", 1*time.Hour)
 		require.NoError(t, err)
 
-		conflict, found := engine.CheckConflict(wl, "")
+		// Exclude the just-allocated lease; no remaining conflict
+		conflict, found := engine.CheckConflict(wl, lease.ID)
 		assert.False(t, found)
 		assert.Nil(t, conflict)
 	})

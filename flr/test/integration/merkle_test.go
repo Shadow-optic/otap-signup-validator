@@ -3,7 +3,6 @@ package integration
 import (
 	"bytes"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
@@ -25,10 +24,16 @@ func computeLeafHash(leaseID string) []byte {
 }
 
 // computeNodeHash computes a parent hash from two child hashes.
+// Sorts inputs lexicographically for consistency with verifyMerkleProof.
 func computeNodeHash(left, right []byte) []byte {
 	h := sha256.New()
-	h.Write(left)
-	h.Write(right)
+	if bytes.Compare(left, right) <= 0 {
+		h.Write(left)
+		h.Write(right)
+	} else {
+		h.Write(right)
+		h.Write(left)
+	}
 	return h.Sum(nil)
 }
 
@@ -286,7 +291,7 @@ func TestMerkleProofVerification(t *testing.T) {
 
 	t.Run("wrong leaf fails", func(t *testing.T) {
 		leaseIDs := []string{"lease-1", "lease-2", "lease-3", "lease-4"}
-		rootHash, leafHashes, proofs := buildMerkleTree(leaseIDs)
+		rootHash, _, proofs := buildMerkleTree(leaseIDs)
 
 		// Use wrong leaf hash with correct proof
 		wrongLeaf := computeLeafHash("nonexistent-lease")
@@ -328,10 +333,6 @@ func TestMerkleCommitmentSignature(t *testing.T) {
 	assert.NotEmpty(t, sig)
 
 	// Verify with the same key (self-verification)
-	h := sha256.Sum256(rootHash)
-	rLen := len(sig) / 2
-	r := new(elliptic.CurveParams().BitSize)
-	// Simple signature verification - in production use proper ASN.1 parsing
 	assert.Equal(t, 64, len(sig), "P-256 signature should be 64 bytes")
 	t.Logf("Signature verified: %x...", sig[:8])
 }
