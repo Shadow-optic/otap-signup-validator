@@ -85,4 +85,17 @@ mod tests {
         let flipped = calculate_rpc(&syms, 0, 0);
         assert_ne!(base, flipped);
     }
+
+    #[test]
+    fn rpc_empty_slice() {
+        let syms: &[Symbol] = &[];
+        let domain = 5;
+        let epoch_nonce = 100;
+        let rpc = calculate_rpc(syms, domain, epoch_nonce);
+
+        let expected_acc: u64 = epoch_nonce + (domain as u64) * 31;
+        let expected_rpc = (expected_acc & 0xFFFF_FFFF) as u32;
+
+        assert_eq!(rpc, expected_rpc, "RPC for empty slice should be the initialized accumulator");
+    }
 }
