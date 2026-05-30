@@ -132,8 +132,8 @@ fn main() -> Result<()> {
     // Cleanup
     running.store(false, Ordering::Release);
     fpga_thread.join().expect("FPGA thread panicked");
+    let c_name = std::ffi::CString::new(SHM_NAME)?;
     unsafe {
-        let c_name = std::ffi::CString::new(SHM_NAME).unwrap();
         libc::shm_unlink(c_name.as_ptr());
     }
 
