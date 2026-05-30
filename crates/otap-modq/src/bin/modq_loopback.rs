@@ -115,9 +115,8 @@ fn main() {
     fpga_thread.join().expect("FPGA thread panicked");
 
     // Clean up shared memory
-    unsafe {
-        let c_name = std::ffi::CString::new(SHM_NAME).unwrap();
-        libc::shm_unlink(c_name.as_ptr());
+    if let Err(e) = BarMapping::unlink_shm(SHM_NAME) {
+        eprintln!("Warning: failed to unlink shm: {}", e);
     }
 
     println!("── Complete ────────────────────────────────────────");
