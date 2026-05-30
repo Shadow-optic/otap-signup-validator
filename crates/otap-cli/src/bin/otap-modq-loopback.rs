@@ -144,7 +144,7 @@ fn main() -> Result<()> {
 
 /// Simulated FPGA consumer — reads SLOT_READY, marks SLOT_FREE.
 fn simulated_fpga(running: Arc<AtomicBool>) {
-    let slot_stride = ((SLOT_SIZE as usize + 16 + 63) & !63) as usize;
+    let slot_stride = (SLOT_SIZE as usize + 16 + 63) & !63;
     let total_size = bar::regs::RING_BASE + slot_stride * RING_DEPTH as usize;
 
     let bar = BarMapping::open_shm(SHM_NAME, total_size)
