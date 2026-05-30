@@ -42,18 +42,18 @@
 //!               → return &[Symbol]
 //! ```
 
-pub mod key_domain;
-pub mod rpc;
 pub mod handshake;
-pub mod session;
+pub mod key_domain;
 pub mod replay_cache;
+pub mod rpc;
+pub mod session;
 
 #[cfg(feature = "transport")]
 pub mod transport;
 
 // Re-export the main entry points for ergonomic use.
-pub use key_domain::{D3SigningKey, D3VerifyingKey, FlrSigningKey, FlrVerifyingKey};
-pub use rpc::{calculate_rpc, Polarization, RpcDomain, Symbol};
 pub use handshake::{HsMsg1, HsMsg2, HsMsg3, Initiator, Responder};
-pub use session::{AuthenticatedFrame, D3Session};
+pub use key_domain::{D3SigningKey, D3VerifyingKey, FlrSigningKey, FlrVerifyingKey};
 pub use replay_cache::PersistentReplayCache;
+pub use rpc::{calculate_rpc, Polarization, RpcDomain, Symbol};
+pub use session::{AuthenticatedFrame, D3Session};

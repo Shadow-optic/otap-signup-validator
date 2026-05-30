@@ -7,9 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::handshake::{
-    ClientAcl, HsError, HsMsg1, HsMsg2, HsMsg3,
-    Initiator, Responder,
-    MSG1_LEN, MSG2_LEN, MSG3_LEN,
+    ClientAcl, HsError, HsMsg1, HsMsg2, HsMsg3, Initiator, Responder, MSG1_LEN, MSG2_LEN, MSG3_LEN,
 };
 use crate::key_domain::{D3SigningKey, D3VerifyingKey};
 use crate::session::D3Session;
@@ -141,9 +139,7 @@ mod tests {
             pol: Polarization::D,
         }];
         let frame = client_session.seal(RpcDomain::LinkData, payload);
-        let opened = server_session
-            .open(RpcDomain::LinkData, &frame)
-            .unwrap();
+        let opened = server_session.open(RpcDomain::LinkData, &frame).unwrap();
         assert_eq!(opened[0].value, 777);
     }
 

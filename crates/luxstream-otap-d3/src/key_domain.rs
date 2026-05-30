@@ -8,8 +8,8 @@
 //! on `D3SigningKey` and no `sign_raw` on `FlrSigningKey`.
 
 use ed25519_dalek::{
-    Signature as EdSig, Signer as EdSigner, SigningKey as EdSk,
-    Verifier as EdVerifier, VerifyingKey as EdVk,
+    Signature as EdSig, Signer as EdSigner, SigningKey as EdSk, Verifier as EdVerifier,
+    VerifyingKey as EdVk,
 };
 use p256::ecdsa::{
     signature::{Signer, Verifier},
@@ -109,11 +109,7 @@ impl FlrSigningKey {
 
 impl FlrVerifyingKey {
     /// Verify an FLR-domain schema signature.
-    pub fn verify_schema(
-        &self,
-        schema_hash: &[u8],
-        sig: &P256Sig,
-    ) -> Result<(), &'static str> {
+    pub fn verify_schema(&self, schema_hash: &[u8], sig: &P256Sig) -> Result<(), &'static str> {
         self.0
             .verify(schema_hash, sig)
             .map_err(|_| "FLR P-256 verification failed")
@@ -135,11 +131,17 @@ mod tests {
 
         // D3 signs/verifies frames
         let d3_sig = d3_sk.sign_raw(frame_data);
-        assert!(d3_sk.verifying_key().verify_raw(frame_data, &d3_sig).is_ok());
+        assert!(d3_sk
+            .verifying_key()
+            .verify_raw(frame_data, &d3_sig)
+            .is_ok());
 
         // FLR signs/verifies schemas
         let flr_sig = flr_sk.sign_schema(schema_data);
-        assert!(flr_sk.verifying_key().verify_schema(schema_data, &flr_sig).is_ok());
+        assert!(flr_sk
+            .verifying_key()
+            .verify_schema(schema_data, &flr_sig)
+            .is_ok());
 
         // COMPILE-TIME ENFORCEMENT:
         // d3_sk.sign_schema(...)  → does not exist

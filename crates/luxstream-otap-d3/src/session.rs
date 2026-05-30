@@ -30,10 +30,7 @@ pub struct AuthenticatedFrame {
 
 impl D3Session {
     /// Construct a session from a completed initiator handshake.
-    pub fn from_client_handshake(
-        established: EstablishedInitiator,
-        our_sk: D3SigningKey,
-    ) -> Self {
+    pub fn from_client_handshake(established: EstablishedInitiator, our_sk: D3SigningKey) -> Self {
         Self {
             epoch_nonce: established.epoch_nonce,
             signing_key: our_sk,
@@ -42,10 +39,7 @@ impl D3Session {
     }
 
     /// Construct a session from a completed responder handshake.
-    pub fn from_server_handshake(
-        established: EstablishedResponder,
-        our_sk: D3SigningKey,
-    ) -> Self {
+    pub fn from_server_handshake(established: EstablishedResponder, our_sk: D3SigningKey) -> Self {
         Self {
             epoch_nonce: established.epoch_nonce,
             signing_key: our_sk,
@@ -54,11 +48,7 @@ impl D3Session {
     }
 
     /// Seal a frame: compute RPC, build canonical preimage, sign with Ed25519.
-    pub fn seal(
-        &self,
-        domain: RpcDomain,
-        symbols: Vec<Symbol>,
-    ) -> AuthenticatedFrame {
+    pub fn seal(&self, domain: RpcDomain, symbols: Vec<Symbol>) -> AuthenticatedFrame {
         let rpc_tag = calculate_rpc(&symbols, domain as u32, self.epoch_nonce);
         let preimage = canonical_preimage(domain, self.epoch_nonce, &symbols, rpc_tag);
         let sig = self.signing_key.sign_raw(&preimage);
@@ -108,15 +98,14 @@ fn canonical_preimage(
 ) -> Vec<u8> {
     let mut h = Sha256::new();
     h.update(b"LUXSTREAM-OTAP-D3-v1");
-    h.update(&(domain as u32).to_be_bytes());
-    h.update(&epoch_nonce.to_be_bytes());
-    h.update(&(symbols.len() as u32).to_be_bytes());
+    h.update((domain as u32).to_be_bytes());
+    h.update(epoch_nonce.to_be_bytes());
+    h.update((symbols.len() as u32).to_be_bytes());
     for s in symbols {
-        h.update(&s.value.to_be_bytes());
-        h.update(&[s.lambda]);
-        h.update(&[s.pol as u8]);
+        let val_bytes = s.value.to_be_bytes();
+        h.update([val_bytes[0], val_bytes[1], s.lambda, s.pol as u8]);
     }
-    h.update(&rpc_tag.to_be_bytes());
+    h.update(rpc_tag.to_be_bytes());
     h.finalize().to_vec()
 }
 
@@ -130,10 +119,10 @@ mod tests {
         let alice_sk = D3SigningKey::from_bytes(&[1u8; 32]);
         let bob_sk = D3SigningKey::from_bytes(&[2u8; 32]);
 
-        let (alice_wait, msg1) =
-            Initiator::new(alice_sk.clone(), bob_sk.verifying_key()).start();
-        let (bob_wait, msg2) =
-            Responder::new(bob_sk.clone(), &AllowAll).handle_msg1(msg1).unwrap();
+        let (alice_wait, msg1) = Initiator::new(alice_sk.clone(), bob_sk.verifying_key()).start();
+        let (bob_wait, msg2) = Responder::new(bob_sk.clone(), &AllowAll)
+            .handle_msg1(msg1)
+            .unwrap();
         let (alice_est, msg3) = alice_wait.finish(msg2).unwrap();
         let bob_est = bob_wait.handle_msg3(msg3).unwrap();
 
@@ -149,8 +138,16 @@ mod tests {
         let (alice, bob) = make_session_pair();
 
         let payload = vec![
-            Symbol { value: 1023, lambda: 34, pol: Polarization::H },
-            Symbol { value: 500, lambda: 34, pol: Polarization::V },
+            Symbol {
+                value: 1023,
+                lambda: 34,
+                pol: Polarization::H,
+            },
+            Symbol {
+                value: 500,
+                lambda: 34,
+                pol: Polarization::V,
+            },
         ];
 
         let frame = alice.seal(RpcDomain::LinkData, payload.clone());
@@ -164,7 +161,11 @@ mod tests {
     fn forgery_detection() {
         let (alice, bob) = make_session_pair();
 
-        let payload = vec![Symbol { value: 42, lambda: 1, pol: Polarization::D }];
+        let payload = vec![Symbol {
+            value: 42,
+            lambda: 1,
+            pol: Polarization::D,
+        }];
         let mut frame = alice.seal(RpcDomain::LinkData, payload);
 
         // Tamper with the payload
@@ -184,7 +185,11 @@ mod tests {
     fn cross_domain_rejection() {
         let (alice, bob) = make_session_pair();
 
-        let payload = vec![Symbol { value: 100, lambda: 10, pol: Polarization::A }];
+        let payload = vec![Symbol {
+            value: 100,
+            lambda: 10,
+            pol: Polarization::A,
+        }];
         let frame = alice.seal(RpcDomain::LinkData, payload);
 
         // Try to open with ControlPlane domain → different preimage → sig fails
