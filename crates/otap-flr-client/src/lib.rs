@@ -436,6 +436,13 @@ mod tests {
     }
 
     #[test]
+    fn test_csr_handle_for_schema_id() {
+        assert_eq!(csr_handle_for_schema_id(SchemaId::EquityTradeOrder), 1);
+        assert_eq!(csr_handle_for_schema_id(SchemaId::MarketTick), 2);
+        assert_eq!(csr_handle_for_schema_id(SchemaId::Heartbeat), 3);
+    }
+
+    #[test]
     fn map_oam_unknown_mode() {
         assert!(map_oam_to_schema_id(99).is_none());
     }
