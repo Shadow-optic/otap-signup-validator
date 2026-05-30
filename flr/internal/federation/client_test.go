@@ -447,13 +447,16 @@ func TestClient_StreamUpdates(t *testing.T) {
 
 	select {
 	case <-done:
-		// Channel closed
+		// All items collected
 	case err := <-errCh:
-		if err != nil {
-			// EOF is expected when server closes connection
-			if !strings.Contains(err.Error(), "EOF") {
-				t.Logf("stream error: %v", err)
-			}
+		// EOF is expected when server closes connection
+		if err != nil && !strings.Contains(err.Error(), "EOF") {
+			t.Logf("stream error: %v", err)
+		}
+		// Wait for collector goroutine to finish draining the channel
+		select {
+		case <-done:
+		case <-time.After(time.Second):
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for stream updates")
