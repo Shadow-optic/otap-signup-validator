@@ -10,6 +10,8 @@ from stage_chronos import (
     GeometricCoherenceKernel,
     STAGEManifoldEncoder,
     SpacetimeTransport,
+    FiberSpec,
+    OtapFiberChannel,
 )
 
 
@@ -162,6 +164,124 @@ def test_coherence_identical_manifolds():
     phi, mse = gck.measure_coherence(tx, tx[:])
     assert math.isclose(phi, 1.0, abs_tol=1e-12)
     assert math.isclose(mse, 0.0, abs_tol=1e-30)
+
+
+# ---------------------------------------------------------------------------
+# OtapFiberChannel
+# ---------------------------------------------------------------------------
+
+def test_pmd_preserves_intervals():
+    """SO(3) PMD rotation is an isometry — Φ must equal 1.0 for any rotation."""
+    enc = STAGEManifoldEncoder()
+    gck = GeometricCoherenceKernel()
+    tx = enc.encode_torus(1, 0.0, resolution=10)
+    for seed in (1, 7, 42, 99):
+        ch = OtapFiberChannel(FiberSpec.pmd_only(seed))
+        rx = ch.apply(tx)
+        phi, mse = gck.measure_coherence(tx, rx, sample_size=30)
+        assert phi > 0.9999, (
+            f"PMD (seed={seed}) broke interval invariance: Φ={phi}, MSE={mse}"
+        )
+
+
+def test_cd_degrades_coherence():
+    """Uncompensated CD reduces Φ below the clean-fiber threshold."""
+    enc = STAGEManifoldEncoder()
+    gck = GeometricCoherenceKernel()
+    tx = enc.encode_torus(1, 0.0, resolution=15)
+
+    # 1 km: negligible — still within pass threshold
+    ch_clean = OtapFiberChannel(FiberSpec.uncompensated_smf(1.0))
+    phi_clean, _ = gck.measure_coherence(tx, ch_clean.apply(tx), sample_size=30)
+    assert phi_clean > 0.99, f"1 km SMF should be clean: Φ={phi_clean}"
+
+    # 80 km: clear failure
+    ch_bad = OtapFiberChannel(FiberSpec.uncompensated_smf(80.0))
+    phi_bad, _ = gck.measure_coherence(tx, ch_bad.apply(tx), sample_size=30)
+    assert phi_bad < 0.50, f"80 km uncompensated SMF should fail: Φ={phi_bad}"
+
+
+def test_cd_monotonic_with_length():
+    """Φ decreases monotonically as fiber length increases (more CD = worse)."""
+    enc = STAGEManifoldEncoder()
+    gck = GeometricCoherenceKernel()
+    tx = enc.encode_torus(1, 0.0, resolution=12)
+    prev_phi = 1.0
+    for km in (0, 5, 20, 80, 200):
+        spec = FiberSpec.uncompensated_smf(float(km)) if km > 0 else FiberSpec.ideal()
+        rx = OtapFiberChannel(spec).apply(tx)
+        phi, _ = gck.measure_coherence(tx, rx, sample_size=30)
+        assert phi <= prev_phi + 1e-10, (
+            f"Φ should not increase with more CD: {km}km Φ={phi} > prev {prev_phi}"
+        )
+        prev_phi = phi
+
+
+def test_pdl_degrades_coherence():
+    """PDL is non-unitary — even small values destroy manifold geometry."""
+    enc = STAGEManifoldEncoder()
+    gck = GeometricCoherenceKernel()
+    tx = enc.encode_torus(1, 0.0, resolution=12)
+    ch = OtapFiberChannel(FiberSpec.pdl_impaired(1.0))
+    phi, _ = gck.measure_coherence(tx, ch.apply(tx), sample_size=30)
+    assert phi < 0.50, f"1 dB PDL should fail coherence check: Φ={phi}"
+
+
+def test_ideal_fiber_perfect_coherence():
+    """Ideal fiber (no impairments) → Φ = 1.0 exactly."""
+    enc = STAGEManifoldEncoder()
+    gck = GeometricCoherenceKernel()
+    tx = enc.encode_torus(1, 0.0, resolution=10)
+    ch = OtapFiberChannel(FiberSpec.ideal())
+    phi, mse = gck.measure_coherence(tx, ch.apply(tx), sample_size=30)
+    assert math.isclose(phi, 1.0, abs_tol=1e-10), f"Ideal fiber: Φ={phi}"
+    assert math.isclose(mse, 0.0, abs_tol=1e-20), f"Ideal fiber: MSE={mse}"
+
+
+def test_pmd_strictly_better_than_cd():
+    """PMD gives higher Φ than uncompensated CD at any distance."""
+    enc = STAGEManifoldEncoder()
+    gck = GeometricCoherenceKernel()
+    tx = enc.encode_torus(1, 0.0, resolution=12)
+    phi_pmd, _ = gck.measure_coherence(
+        tx, OtapFiberChannel(FiberSpec.pmd_only(42)).apply(tx), sample_size=30
+    )
+    phi_cd, _ = gck.measure_coherence(
+        tx, OtapFiberChannel(FiberSpec.uncompensated_smf(80.0)).apply(tx), sample_size=30
+    )
+    assert phi_pmd > phi_cd, (
+        f"PMD should preserve geometry better than 80 km CD: "
+        f"Φ_pmd={phi_pmd}, Φ_cd={phi_cd}"
+    )
+
+
+def test_long_haul_fails():
+    """Long-haul link (CD + DGD + EDFA noise combined) definitively fails."""
+    enc = STAGEManifoldEncoder()
+    gck = GeometricCoherenceKernel()
+    tx = enc.encode_torus(1, 0.0, resolution=12)
+    ch = OtapFiberChannel(FiberSpec.long_haul(500, 6))
+    phi, _ = gck.measure_coherence(tx, ch.apply(tx), sample_size=30)
+    assert phi < 0.10, f"500 km long-haul should completely fail: Φ={phi}"
+
+
+def test_fiber_channel_preserves_point_count():
+    """All impairments must return the same number of points."""
+    enc = STAGEManifoldEncoder()
+    tx = enc.encode_torus(1, 0.0, resolution=10)
+    specs = [
+        FiberSpec.ideal(),
+        FiberSpec.pmd_only(0),
+        FiberSpec.uncompensated_smf(80),
+        FiberSpec.high_dgd(50),
+        FiberSpec.pdl_impaired(2.0),
+        FiberSpec.long_haul(200, 3),
+    ]
+    for spec in specs:
+        rx = OtapFiberChannel(spec).apply(tx)
+        assert len(rx) == len(tx), (
+            f"Point count changed after {spec}: {len(rx)} != {len(tx)}"
+        )
 
 
 # ---------------------------------------------------------------------------
