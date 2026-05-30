@@ -154,4 +154,7 @@ pub enum ModqError {
 
     #[error("failed to truncate shared memory: {0}")]
     ShmTruncateFailed(String),
+
+    #[error("failed to unlink shared memory: {0}")]
+    ShmUnlinkFailed(String),
 }

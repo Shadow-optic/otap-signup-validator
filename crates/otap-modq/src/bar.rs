@@ -181,6 +181,19 @@ impl BarMapping {
     pub fn size(&self) -> usize {
         self.size
     }
+
+    /// Safely unlinks a shared memory region by name.
+    pub fn unlink_shm(name: &str) -> Result<(), ModqError> {
+        let c_name = std::ffi::CString::new(name)
+            .map_err(|_| ModqError::InvalidShmName(name.to_string()))?;
+
+        let res = unsafe { libc::shm_unlink(c_name.as_ptr()) };
+        if res < 0 {
+            return Err(ModqError::ShmUnlinkFailed(name.to_string()));
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for BarMapping {

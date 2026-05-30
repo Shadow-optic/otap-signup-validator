@@ -41,7 +41,6 @@ thiserror = "1.0"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 bytemuck = { version = "1.14", features = ["derive"] }
 libc = "0.2"
-crossbeam-utils = "0.8"
 
 # FLR client deps (host-side only; not pulled by no_std crates)
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "blocking"] }
