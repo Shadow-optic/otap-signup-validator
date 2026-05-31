@@ -17,6 +17,7 @@
 .PHONY: help all check test build clean \
         rust-check rust-test rust-build rust-clean \
         flr flr-build flr-test flr-clean flr-seed flrd \
+        chronos-test bench-chronos \
         demo-local demo-modq demo-fullstack \
         golden verify-golden verify-golden-http \
         bench-bitweave bench-modq \
@@ -33,7 +34,7 @@ help:
 	@echo ""
 	@echo "  Status / sanity"
 	@echo "    make check               # cargo check + go vet (incl. modq feature)"
-	@echo "    make test                # full test suite (Rust + Go + bitweave fuzzer)"
+	@echo "    make test                # full test suite (Rust + Go + STAGE-CHRONOS Python)"
 	@echo ""
 	@echo "  Build"
 	@echo "    make rust-build          # cargo build --workspace --release"
@@ -48,6 +49,7 @@ help:
 	@echo "  Benchmarks"
 	@echo "    make bench-bitweave      # Go bitweave conflict scanner ns/query"
 	@echo "    make bench-modq          # Rust MODQ ring throughput + latency"
+	@echo "    make bench-chronos       # STAGE-CHRONOS Python pipeline benchmarks"
 	@echo ""
 	@echo "  Cross-language vectors"
 	@echo "    make golden                          # regenerate testdata/golden_vectors.json"
@@ -75,7 +77,7 @@ rust-check:
 # Full test suite
 # ============================================================================
 
-test: rust-test flr-test
+test: rust-test flr-test chronos-test
 
 rust-test:
 	cargo test --workspace --release
@@ -83,9 +85,15 @@ rust-test:
 flr-test:
 	cd flr && go test ./... -race
 
+chronos-test:
+	python -m pytest stage-chronos/ -q
+
 # Run the bitweave benchmarks (needs local Go toolchain)
 bench-bitweave:
 	cd flr && go test ./internal/bitweave -bench=. -benchmem -count=3
+
+bench-chronos:
+	python stage-chronos/bench.py
 
 # Run the MODQ ring throughput benchmark (needs local Rust toolchain)
 bench-modq:
