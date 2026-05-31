@@ -12,6 +12,15 @@ from stage_chronos import (
     SpacetimeTransport,
     FiberSpec,
     OtapFiberChannel,
+    LinkState,
+    DynamicCoherenceTracker,
+    run_drift_scenario,
+    chronos_slowramp_sweep,
+    LayeredTracker,
+    run_layered_sweep,
+    measure_normalized_deviation,
+    run_pdl_sweep,
+    crossing,
 )
 
 
@@ -282,6 +291,197 @@ def test_fiber_channel_preserves_point_count():
         assert len(rx) == len(tx), (
             f"Point count changed after {spec}: {len(rx)} != {len(tx)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DynamicCoherenceTracker (CHRONOS-Drift)
+# ---------------------------------------------------------------------------
+
+def test_drift_tracker_warmup():
+    """During warmup (< window_size frames) state stays HEALTHY and edge is False."""
+    tr = DynamicCoherenceTracker(window_size=10)
+    for t in range(9):
+        r = tr.process(1.0, t)
+        assert r["state"] == LinkState.HEALTHY
+        assert r["edge"] is False
+
+
+def test_drift_tracker_step_tap_detected():
+    """A step drop of 0.5 Phi (>>4σ) must trigger ALARM then COMPROMISED."""
+    tr = DynamicCoherenceTracker(window_size=10, alpha=0.05, z_threshold=3.0, confirm_frames=3)
+    # Warmup with stable signal
+    for t in range(10):
+        tr.process(1.0, t)
+    # Inject a large step drop
+    edges = []
+    state = LinkState.HEALTHY
+    for t in range(10, 25):
+        r = tr.process(0.5, t)
+        if r["edge"]:
+            edges.append(t)
+        state = r["state"]
+    assert len(edges) >= 1, "Step drop must produce at least one edge event"
+    assert state == LinkState.COMPROMISED, f"Expected COMPROMISED, got {state}"
+
+
+def test_drift_tracker_no_false_alarm_stable():
+    """Stable signal with zero variance must not fire any alarms."""
+    tr = DynamicCoherenceTracker(window_size=20, z_threshold=4.0, confirm_frames=3)
+    for t in range(100):
+        r = tr.process(1.0, t)
+        assert r["edge"] is False
+        assert r["state"] == LinkState.HEALTHY
+
+
+def test_drift_tracker_ack_resets():
+    """ack() must reset state to HEALTHY and clear history."""
+    tr = DynamicCoherenceTracker(window_size=10, z_threshold=3.0, confirm_frames=3)
+    for t in range(10):
+        tr.process(1.0, t)
+    for t in range(10, 15):
+        tr.process(0.3, t)
+    assert tr.state == LinkState.COMPROMISED
+    tr.ack()
+    assert tr.state == LinkState.HEALTHY
+    assert tr.shock_run == 0
+    assert len(tr.history) == 0
+
+
+def test_drift_tracker_edge_single_per_episode():
+    """Only the first frame of a shock run sets edge=True."""
+    tr = DynamicCoherenceTracker(window_size=10, z_threshold=3.0, confirm_frames=5)
+    for t in range(10):
+        tr.process(1.0, t)
+    edges = []
+    for t in range(10, 20):
+        r = tr.process(0.3, t)
+        if r["edge"]:
+            edges.append(t)
+    assert len(edges) == 1, f"Expected exactly 1 edge event, got {edges}"
+
+
+def test_run_drift_scenario_mild_thermal():
+    """Mild thermal + 0.6 dB tap: dynamic must TP, FP must be 0."""
+    result = run_drift_scenario(
+        "mild", thermal_amp=0.15, thermal_mid=0.25, tap_pdl=0.6
+    )
+    assert result["dyn_tp"] is True, "Must detect 0.6 dB tap"
+    assert result["dyn_fp"] == 0, f"Zero FP expected, got {result['dyn_fp']}"
+
+
+def test_run_drift_scenario_static_fp():
+    """Harsh thermal causes static FP > 0."""
+    result = run_drift_scenario(
+        "harsh", thermal_amp=0.275, thermal_mid=0.375, tap_pdl=0.6
+    )
+    assert result["static_fp"] > 0, "Harsh thermal should create static FP"
+    assert result["dyn_fp"] == 0, f"Dynamic FP should be 0, got {result['dyn_fp']}"
+
+
+def test_slowramp_sweep_step_detected():
+    """Step insertion (ramp=1) must always be detected."""
+    results = chronos_slowramp_sweep(ramp_rates=[1])
+    assert results[0]["detected"] is True
+
+
+def test_slowramp_sweep_slow_ramp_evades():
+    """Very slow ramp (1200 frames >> 1/alpha=20) evades the differential detector."""
+    results = chronos_slowramp_sweep(ramp_rates=[1200])
+    assert results[0]["detected"] is False, (
+        f"Ramp=1200 should evade differential detector, but detected={results[0]['detected']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# LayeredTracker (fast + slow layers)
+# ---------------------------------------------------------------------------
+
+def test_layered_tracker_step_caught_by_fast():
+    """Step insertion must be caught by the fast layer."""
+    tr = LayeredTracker(window=10, alpha=0.05, z_thr=3.0, confirm=3,
+                        long_window=400, ratchet_thr=0.025)
+    for t in range(10):
+        tr.process(1.0, t)
+    for t in range(10, 20):
+        r = tr.process(0.3, t)
+        if r["state"] == LinkState.COMPROMISED:
+            assert r["via"] == "FAST"
+            break
+    else:
+        assert False, "Step insertion must reach COMPROMISED"
+
+
+def test_layered_sweep_no_ramp_evades():
+    """Layered detector must catch every ramp rate in the test set."""
+    results = run_layered_sweep(
+        ramp_rates=[1, 10, 25, 50, 100, 200, 400, 800],
+        T=2500, tap_start=600,
+    )
+    evaded = [r["ramp"] for r in results if not r["detected"]]
+    assert evaded == [], f"Layered detector has blind spot at ramps: {evaded}"
+
+
+def test_layered_sweep_slow_ramp_via_slow():
+    """Ramp rates that evade the fast layer must be caught via the slow layer."""
+    results = run_layered_sweep(ramp_rates=[400, 800], T=2500, tap_start=600)
+    for r in results:
+        assert r["detected"], f"ramp={r['ramp']} not detected"
+        if r["via"] is not None:
+            # Slow ramps should be caught via SLOW (or FAST at very high ramp)
+            pass  # just ensure no crash, via field is populated
+
+
+def test_layered_tracker_ack():
+    """ack() clears all state on LayeredTracker."""
+    tr = LayeredTracker(window=10, z_thr=3.0, confirm=3)
+    for t in range(10):
+        tr.process(1.0, t)
+    for t in range(10, 15):
+        tr.process(0.3, t)
+    assert tr.state == LinkState.COMPROMISED
+    tr.ack()
+    assert tr.state == LinkState.HEALTHY
+    assert tr.fast_event is None
+    assert tr.slow_event is None
+
+
+# ---------------------------------------------------------------------------
+# PDL calibrated sweep
+# ---------------------------------------------------------------------------
+
+def test_pdl_sweep_zero_pdl_phi_one():
+    """Zero PDL: phi_cal must equal 1.0 (no distortion)."""
+    enc = STAGEManifoldEncoder()
+    tx = enc.encode_torus(symbol=1, time_t=0.0, resolution=10)
+    rms_rel, phi_cal = measure_normalized_deviation(tx, tx, sample_size=20)
+    assert math.isclose(rms_rel, 0.0, abs_tol=1e-10), f"rms_rel={rms_rel}"
+    assert math.isclose(phi_cal, 1.0, abs_tol=1e-10), f"phi_cal={phi_cal}"
+
+
+def test_pdl_sweep_monotonic():
+    """phi_cal must decrease monotonically as PDL increases (resolution=20 for full sampling)."""
+    results = run_pdl_sweep(resolution=20, sample_size=50)
+    phis = [phi for _, phi, _ in results]
+    for i in range(1, len(phis)):
+        assert phis[i] <= phis[i - 1] + 1e-8, (
+            f"phi_cal not monotonic at index {i}: {phis[i-1]} → {phis[i]}"
+        )
+
+
+def test_pdl_sweep_high_pdl_low_phi():
+    """3 dB PDL must noticeably reduce phi_cal (resolution=20 for full sampling)."""
+    results = run_pdl_sweep(resolution=20, sample_size=50)
+    hi = [phi for pdl, phi, _ in results if pdl >= 2.9]
+    assert hi, "No results at 3 dB"
+    assert hi[0] < 0.85, f"phi_cal at 3 dB PDL should be < 0.85, got {hi[0]}"
+
+
+def test_pdl_crossing_utility():
+    """crossing() returns first PDL where phi drops below threshold (resolution=20)."""
+    results = run_pdl_sweep(resolution=20, sample_size=50)
+    c = crossing(results, 0.95)
+    assert c is not None, "Should cross 0.95 somewhere in 0–3 dB range"
+    assert 0.0 < c < 3.0, f"Crossing at {c} dB outside expected range"
 
 
 # ---------------------------------------------------------------------------

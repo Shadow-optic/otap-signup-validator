@@ -20,10 +20,15 @@ import math
 import time
 from typing import Callable, Any
 
+import numpy as np
+
 from .coherence import GeometricCoherenceKernel
 from .encoder import STAGEManifoldEncoder
 from .fiber_channel import FiberSpec, OtapFiberChannel
 from .transport import SpacetimeTransport
+from .drift import DynamicCoherenceTracker, LinkState, run_drift_scenario, chronos_slowramp_sweep
+from .layered import LayeredTracker, run_layered_sweep
+from .pdl_sweep import measure_normalized_deviation, run_pdl_sweep, crossing
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +334,150 @@ def bench_throughput() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 11. CHRONOS-Drift: DynamicCoherenceTracker throughput
+# ---------------------------------------------------------------------------
+
+def bench_drift_tracker() -> None:
+    _hdr("11. CHRONOS-Drift — DynamicCoherenceTracker.process() throughput")
+    print(f"  Measures per-frame processing latency for the 3-state coherence tracker.")
+    print()
+
+    scenarios = [
+        ("Step tap (Phi drop from 1.0 to 0.4)", 1.0, 0.4, True),
+        ("Stable link (no tap)", 1.0, 1.0, False),
+        ("Marginal signal (Phi=0.9)", 0.9, 0.9, False),
+    ]
+
+    print(f"  {'T':>6}  {'Scenario':<38}  {'Time':>10}  {'µs/frame':>10}  {'Mframes/s':>11}")
+    print(f"  {'-'*6}  {'-'*38}  {'-'*10}  {'-'*10}  {'-'*11}")
+
+    for T in (200, 1000, 5000):
+        for label, phi_before, phi_after, has_tap in scenarios:
+            tap_at = T // 2
+            phi_stream = np.concatenate([
+                np.full(tap_at, phi_before),
+                np.full(T - tap_at, phi_after),
+            ])
+
+            def run_tracker(stream=phi_stream):
+                tr = DynamicCoherenceTracker()
+                for t, phi in enumerate(stream):
+                    tr.process(phi, t)
+
+            t = _time_it(run_tracker, repeat=5, warmup=1)
+            print(f"  {T:>6}  {label:<38}  {_fmt(t)}  {t/T*1e6:>10.3f}  {T/t/1e6:>11.3f}")
+
+
+# ---------------------------------------------------------------------------
+# 12. CHRONOS-Drift: scenario analysis
+# ---------------------------------------------------------------------------
+
+def bench_drift_scenarios() -> None:
+    _hdr("12. CHRONOS-Drift — run_drift_scenario() scenario analysis")
+    print(f"  {'Scenario':<38}  {'Time':>10}  {'dyn_tp':>7}  {'dyn_fp':>7}  {'compromised_at':>15}")
+    print(f"  {'-'*38}  {'-'*10}  {'-'*7}  {'-'*7}  {'-'*15}")
+
+    cases = [
+        ("Mild thermal 0.6 dB tap", dict(name="mild", thermal_amp=0.15, thermal_mid=0.25, tap_pdl=0.6)),
+        ("Harsh thermal 0.6 dB tap", dict(name="harsh", thermal_amp=0.275, thermal_mid=0.375, tap_pdl=0.6)),
+        ("Harsh thermal 0.4 dB stealth", dict(name="stealth", thermal_amp=0.275, thermal_mid=0.375, tap_pdl=0.4)),
+    ]
+    for label, kw in cases:
+        t = _time_it(lambda k=kw: run_drift_scenario(**k))
+        r = run_drift_scenario(**kw)
+        print(f"  {label:<38}  {_fmt(t)}  {str(r['dyn_tp']):>7}  {r['dyn_fp']:>7}  {str(r['compromised_at']):>15}")
+
+
+# ---------------------------------------------------------------------------
+# 13. CHRONOS-Drift: slow-ramp sweep
+# ---------------------------------------------------------------------------
+
+def bench_slowramp_sweep() -> None:
+    _hdr("13. CHRONOS-Drift — slow-ramp adversary sweep (differential detector)")
+    print(f"  Ramp rate 1/alpha = ~20 frames is the blind spot for the fast layer.")
+    print()
+    print(f"  {'Ramp (fr)':>10}  {'Detected':>8}  {'Latency':>9}  {'comp_at':>9}  Note")
+    print(f"  {'-'*10}  {'-'*8}  {'-'*9}  {'-'*9}  ----")
+
+    results = chronos_slowramp_sweep()
+    for r in results:
+        lat = str(r['latency']) if r['latency'] is not None else "—"
+        comp = str(r['compromised_at']) if r['compromised_at'] is not None else "—"
+        note = "step-like" if r['ramp'] <= 10 else ("blind spot" if not r['detected'] else "ramp caught")
+        print(f"  {r['ramp']:>10}  {str(r['detected']):>8}  {lat:>9}  {comp:>9}  {note}")
+
+    t = _time_it(chronos_slowramp_sweep, repeat=3, warmup=1)
+    print(f"\n  Full sweep (10 ramp rates): {_fmt(t)}")
+
+
+# ---------------------------------------------------------------------------
+# 14. LayeredTracker: fast + slow detection sweep
+# ---------------------------------------------------------------------------
+
+def bench_layered_sweep() -> None:
+    _hdr("14. CHRONOS-Drift — LayeredTracker (fast+slow) sweep")
+    print(f"  Fast layer catches steps; slow ratchet closes the slow-ramp blind spot.")
+    print()
+    print(f"  {'Ramp (fr)':>10}  {'Detected':>8}  {'Via':>5}  {'Latency':>9}  {'comp_at':>9}")
+    print(f"  {'-'*10}  {'-'*8}  {'-'*5}  {'-'*9}  {'-'*9}")
+
+    results = run_layered_sweep()
+    for r in results:
+        lat = str(r['latency']) if r['latency'] is not None else "EVADED"
+        comp = str(r['comp_at']) if r['comp_at'] is not None else "—"
+        via = str(r['via']) if r['via'] is not None else "—"
+        print(f"  {r['ramp']:>10}  {str(r['detected']):>8}  {via:>5}  {lat:>9}  {comp:>9}")
+
+    evaded = [r['ramp'] for r in results if not r['detected']]
+    print(f"\n  Evaded: {evaded if evaded else 'none — all ramps detected'}")
+
+    t = _time_it(run_layered_sweep, repeat=3, warmup=1)
+    print(f"  Full sweep (10 ramp rates): {_fmt(t)}")
+
+
+# ---------------------------------------------------------------------------
+# 15. PDL calibrated sweep
+# ---------------------------------------------------------------------------
+
+def bench_pdl_calibrated_sweep() -> None:
+    _hdr("15. PDL Calibrated Sweep — phi_cal = 1/(1+rms_rel)")
+    print(f"  Normalized metric avoids exp(-mse*k) saturation; gentle & monotonic.")
+    print()
+    print(f"  {'PDL (dB)':>9}  {'phi_cal':>9}  {'rms_rel':>10}  {'Status':>9}  {'Time':>10}")
+    print(f"  {'-'*9}  {'-'*9}  {'-'*10}  {'-'*9}  {'-'*10}")
+
+    enc = STAGEManifoldEncoder()
+    tx = enc.encode_torus(symbol=1, time_t=0.0, resolution=20)
+
+    from .pdl_sweep import _apply_pdl
+    spot_pdls = [0.0, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0]
+    for pdl in spot_pdls:
+        rx = _apply_pdl(tx, pdl) if pdl > 0 else tx
+        rms_rel, phi_cal = measure_normalized_deviation(tx, rx, sample_size=50)
+        t = _time_it(lambda r=rx: measure_normalized_deviation(tx, r, 50))
+        status = "PASS" if phi_cal > 0.95 else ("ALARM" if phi_cal > 0.80 else "FAIL")
+        print(f"  {pdl:>9.2f}  {phi_cal:>9.5f}  {rms_rel:>10.5f}  {status:>9}  {_fmt(t)}")
+
+    results = run_pdl_sweep(resolution=20, sample_size=50)
+    print(f"\n  Threshold crossings:")
+    for thr in [0.95, 0.90, 0.80]:
+        c = crossing(results, thr)
+        if c is not None:
+            print(f"    phi_cal < {thr:.2f}  at PDL = {c:.3f} dB")
+        else:
+            print(f"    phi_cal < {thr:.2f}  not reached in 0–3 dB range")
+
+    detect_thr = crossing(results, 0.90)
+    if detect_thr is not None:
+        margin_lo = 1.0 - detect_thr
+        margin_hi = 3.0 - detect_thr
+        print(f"\n  Alarm threshold (phi<0.90) at {detect_thr:.3f} dB")
+        print(f"  Typical rogue-tap PDL: 1.0–3.0 dB  →  detection margin: {margin_lo:.2f}–{margin_hi:.2f} dB")
+        if margin_lo > 0:
+            print(f"  [PASS] Alarm fires well below the rogue-tap floor.")
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -347,6 +496,11 @@ def run_all() -> None:
     bench_fiber_vs_lorentz()
     bench_pipeline()
     bench_throughput()
+    bench_drift_tracker()
+    bench_drift_scenarios()
+    bench_slowramp_sweep()
+    bench_layered_sweep()
+    bench_pdl_calibrated_sweep()
 
     print(f"\n{'═' * 68}")
     print("  Done.")
