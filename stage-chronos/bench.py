@@ -552,7 +552,7 @@ def bench_holographic_throughput() -> None:
     _hdr("18. Holographic throughput summary  (modes=128)")
     modes = 128
     manifold = STAGEHelixEncoder.generate_helix(2, num_points=modes)
-    z_coords = np.array([p.z for p in manifold])
+    z_coords = np.arange(modes) * (2.0 * math.pi / modes)
     fiber = MultimodeFiber(modes=modes, seed=42)
     hologram = SpatialLightModulator.create_hologram(manifold)
     speckle  = fiber.transmit(hologram)
@@ -572,15 +572,17 @@ def bench_holographic_throughput() -> None:
          lambda: SpatialLightModulator.reconstruct_manifold(recovered, z_coords)),
         ("measure_holographic_coherence (sample=20)",
          lambda: measure_holographic_coherence(manifold, rx_manifold, sample_size=20)),
-        ("Full pipeline (symbol=2, modes=128)",
-         lambda: run_holographic_pipeline(data_symbol=2, resolution=modes, seed=42)),
+        ("Pipeline  — cached fiber (excl. QR)",
+         lambda: run_holographic_pipeline(2, modes, 42, fiber=fiber)),
+        ("Pipeline  — incl. fiber init (QR 128×128)",
+         lambda: run_holographic_pipeline(2, modes, 42)),
     ]
 
-    print(f"  {'Operation':<52}  {'Time':>10}  {'ops/s':>10}")
-    print(f"  {'-'*52}  {'-'*10}  {'-'*10}")
+    print(f"  {'Operation':<54}  {'Time':>10}  {'ops/s':>10}")
+    print(f"  {'-'*54}  {'-'*10}  {'-'*10}")
     for label, fn in cases:
         t = _time_it(fn, repeat=5, warmup=1)
-        print(f"  {label:<52}  {_fmt(t)}  {1/t:>10,.0f}")
+        print(f"  {label:<54}  {_fmt(t)}  {1/t:>10,.0f}")
 
 
 def run_all() -> None:
