@@ -29,6 +29,10 @@ from .transport import SpacetimeTransport
 from .drift import DynamicCoherenceTracker, LinkState, run_drift_scenario, chronos_slowramp_sweep
 from .layered import LayeredTracker, run_layered_sweep
 from .pdl_sweep import measure_normalized_deviation, run_pdl_sweep, crossing
+from .holographic import (
+    STAGEHelixEncoder, SpatialLightModulator, MultimodeFiber,
+    measure_holographic_coherence, run_holographic_pipeline,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +485,104 @@ def bench_pdl_calibrated_sweep() -> None:
 # Runner
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 16. Holographic pipeline — end-to-end latency vs mode count
+# ---------------------------------------------------------------------------
+
+def bench_holographic_pipeline() -> None:
+    _hdr("16. Holographic MMF+DPC pipeline  (encode→SLM→MMF→DPC→SLM)")
+    print(f"  Helix OAM symbol=2; timing for encode+transmit+DPC+reconstruct.")
+    print()
+    print(f"  {'modes':>7}  {'SLM fwd':>10}  {'MMF tx':>10}  {'DPC rec':>10}  "
+          f"{'SLM inv':>10}  {'total':>10}  {'phi_rx':>8}")
+    print(f"  {'-'*7}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*8}")
+
+    for modes in (32, 64, 128, 256, 512):
+        manifold = STAGEHelixEncoder.generate_helix(2, num_points=modes)
+        z_coords = np.array([p.z for p in manifold])
+        fiber = MultimodeFiber(modes=modes, seed=42)
+
+        t_slm_fwd  = _time_it(lambda m=manifold: SpatialLightModulator.create_hologram(m))
+        hologram   = SpatialLightModulator.create_hologram(manifold)
+        t_mmf_tx   = _time_it(lambda h=hologram: fiber.transmit(h))
+        speckle    = fiber.transmit(hologram)
+        t_dpc      = _time_it(lambda s=speckle: fiber.phase_conjugate_recovery(s))
+        recovered  = fiber.phase_conjugate_recovery(speckle)
+        t_slm_inv  = _time_it(lambda r=recovered, z=z_coords:
+                               SpatialLightModulator.reconstruct_manifold(r, z))
+
+        rx_manifold = SpatialLightModulator.reconstruct_manifold(recovered, z_coords)
+        phi = measure_holographic_coherence(manifold, rx_manifold, sample_size=20)
+        total = t_slm_fwd + t_mmf_tx + t_dpc + t_slm_inv
+
+        print(f"  {modes:>7}  {_fmt(t_slm_fwd):>10}  {_fmt(t_mmf_tx):>10}  "
+              f"{_fmt(t_dpc):>10}  {_fmt(t_slm_inv):>10}  {_fmt(total):>10}  {phi:>8.6f}")
+
+
+# ---------------------------------------------------------------------------
+# 17. Holographic security sweep — OAM symbol × fiber seed
+# ---------------------------------------------------------------------------
+
+def bench_holographic_security() -> None:
+    _hdr("17. Holographic security sweep  (phi_adversary vs phi_receiver)")
+    print(f"  Security guarantee: phi_adversary ≈ 0, phi_receiver ≈ 1 for all symbols.")
+    print()
+    print(f"  {'modes':>7}  {'symbol':>7}  {'seed':>6}  {'phi_adversary':>14}  "
+          f"{'phi_receiver':>13}  {'gap':>8}  Security")
+    print(f"  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*14}  {'-'*13}  {'-'*8}  --------")
+
+    configs = [
+        (64, 0, 42), (64, 1, 42), (64, 2, 42), (64, 5, 42),
+        (128, 2, 7), (128, 2, 99),
+        (256, 3, 1),
+    ]
+    for modes, symbol, seed in configs:
+        r = run_holographic_pipeline(data_symbol=symbol, resolution=modes, seed=seed)
+        gap = r["phi_receiver"] - r["phi_adversary"]
+        secure = "[PASS]" if gap > 0.95 else "[WARN]"
+        print(f"  {modes:>7}  {symbol:>7}  {seed:>6}  {r['phi_adversary']:>14.8f}  "
+              f"{r['phi_receiver']:>13.8f}  {gap:>8.6f}  {secure}")
+
+
+# ---------------------------------------------------------------------------
+# 18. Holographic throughput summary
+# ---------------------------------------------------------------------------
+
+def bench_holographic_throughput() -> None:
+    _hdr("18. Holographic throughput summary  (modes=128)")
+    modes = 128
+    manifold = STAGEHelixEncoder.generate_helix(2, num_points=modes)
+    z_coords = np.array([p.z for p in manifold])
+    fiber = MultimodeFiber(modes=modes, seed=42)
+    hologram = SpatialLightModulator.create_hologram(manifold)
+    speckle  = fiber.transmit(hologram)
+    recovered = fiber.phase_conjugate_recovery(speckle)
+    rx_manifold = SpatialLightModulator.reconstruct_manifold(recovered, z_coords)
+
+    cases = [
+        ("STAGEHelixEncoder.generate_helix (128 pts)",
+         lambda: STAGEHelixEncoder.generate_helix(2, num_points=modes)),
+        ("SpatialLightModulator.create_hologram",
+         lambda: SpatialLightModulator.create_hologram(manifold)),
+        ("MultimodeFiber.transmit (128 modes)",
+         lambda: fiber.transmit(hologram)),
+        ("MultimodeFiber.phase_conjugate_recovery",
+         lambda: fiber.phase_conjugate_recovery(speckle)),
+        ("SpatialLightModulator.reconstruct_manifold",
+         lambda: SpatialLightModulator.reconstruct_manifold(recovered, z_coords)),
+        ("measure_holographic_coherence (sample=20)",
+         lambda: measure_holographic_coherence(manifold, rx_manifold, sample_size=20)),
+        ("Full pipeline (symbol=2, modes=128)",
+         lambda: run_holographic_pipeline(data_symbol=2, resolution=modes, seed=42)),
+    ]
+
+    print(f"  {'Operation':<52}  {'Time':>10}  {'ops/s':>10}")
+    print(f"  {'-'*52}  {'-'*10}  {'-'*10}")
+    for label, fn in cases:
+        t = _time_it(fn, repeat=5, warmup=1)
+        print(f"  {label:<52}  {_fmt(t)}  {1/t:>10,.0f}")
+
+
 def run_all() -> None:
     print("╔══════════════════════════════════════════════════════════════════╗")
     print("║         STAGE-CHRONOS  Comprehensive Benchmark Suite            ║")
@@ -501,6 +603,9 @@ def run_all() -> None:
     bench_slowramp_sweep()
     bench_layered_sweep()
     bench_pdl_calibrated_sweep()
+    bench_holographic_pipeline()
+    bench_holographic_security()
+    bench_holographic_throughput()
 
     print(f"\n{'═' * 68}")
     print("  Done.")

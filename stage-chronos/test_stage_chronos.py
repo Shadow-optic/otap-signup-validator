@@ -21,6 +21,11 @@ from stage_chronos import (
     measure_normalized_deviation,
     run_pdl_sweep,
     crossing,
+    STAGEHelixEncoder,
+    SpatialLightModulator,
+    MultimodeFiber,
+    measure_holographic_coherence,
+    run_holographic_pipeline,
 )
 
 
@@ -482,6 +487,159 @@ def test_pdl_crossing_utility():
     c = crossing(results, 0.95)
     assert c is not None, "Should cross 0.95 somewhere in 0–3 dB range"
     assert 0.0 < c < 3.0, f"Crossing at {c} dB outside expected range"
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# STAGEHelixEncoder
+# ---------------------------------------------------------------------------
+
+def test_helix_point_count():
+    """generate_helix returns exactly num_points SpacetimePoints."""
+    m = STAGEHelixEncoder.generate_helix(0, num_points=64)
+    assert len(m) == 64
+
+
+def test_helix_time_zero():
+    """All helix points must have t=0.0."""
+    for symbol in (0, 1, 3):
+        for p in STAGEHelixEncoder.generate_helix(symbol, num_points=32):
+            assert math.isclose(p.t, 0.0)
+
+
+def test_helix_radius_constant():
+    """For any OAM symbol, all points should lie on a cylinder of constant radius."""
+    for symbol in (0, 2, 5):
+        m = STAGEHelixEncoder.generate_helix(symbol, num_points=50, radius=1.5)
+        for p in m:
+            r = math.sqrt(p.x**2 + p.y**2)
+            assert math.isclose(r, 1.5, rel_tol=1e-9), f"r={r} != 1.5 for symbol {symbol}"
+
+
+def test_helix_symbols_distinct():
+    """Different OAM symbols must produce different manifold geometries."""
+    m0 = STAGEHelixEncoder.generate_helix(0, num_points=64)
+    m1 = STAGEHelixEncoder.generate_helix(1, num_points=64)
+    m3 = STAGEHelixEncoder.generate_helix(3, num_points=64)
+    # Check that at least one point differs
+    diffs_01 = sum(1 for a, b in zip(m0, m1) if abs(a.x - b.x) > 1e-9)
+    diffs_03 = sum(1 for a, b in zip(m0, m3) if abs(a.x - b.x) > 1e-9)
+    assert diffs_01 > 0, "symbol 0 and 1 must produce different manifolds"
+    assert diffs_03 > 0, "symbol 0 and 3 must produce different manifolds"
+
+
+# ---------------------------------------------------------------------------
+# SpatialLightModulator round-trip
+# ---------------------------------------------------------------------------
+
+def test_slm_hologram_roundtrip():
+    """SLM create→reconstruct must recover the original manifold exactly."""
+    manifold = STAGEHelixEncoder.generate_helix(2, num_points=64)
+    import numpy as np
+    z_coords = np.array([p.z for p in manifold])
+    hologram = SpatialLightModulator.create_hologram(manifold)
+    recovered = SpatialLightModulator.reconstruct_manifold(hologram, z_coords)
+    for orig, rec in zip(manifold, recovered):
+        assert math.isclose(orig.x, rec.x, abs_tol=1e-10), f"x mismatch: {orig.x} vs {rec.x}"
+        assert math.isclose(orig.y, rec.y, abs_tol=1e-10), f"y mismatch: {orig.y} vs {rec.y}"
+        assert math.isclose(orig.z, rec.z, abs_tol=1e-10), f"z mismatch: {orig.z} vs {rec.z}"
+
+
+def test_slm_hologram_length():
+    """Hologram must have the same length as the input manifold."""
+    import numpy as np
+    manifold = STAGEHelixEncoder.generate_helix(0, num_points=100)
+    h = SpatialLightModulator.create_hologram(manifold)
+    assert len(h) == 100
+    assert h.dtype == np.complex128
+
+
+# ---------------------------------------------------------------------------
+# MultimodeFiber (MMF) and Digital Phase Conjugation (DPC)
+# ---------------------------------------------------------------------------
+
+def test_mmf_transmission_matrix_is_unitary():
+    """The random Transmission Matrix must be unitary (T† T = I)."""
+    import numpy as np
+    fiber = MultimodeFiber(modes=32, seed=0)
+    T = fiber.transmission_matrix
+    product = np.conj(T.T) @ T
+    assert np.allclose(product, np.eye(32), atol=1e-10), "T must be unitary"
+
+
+def test_mmf_conjugation_is_inverse():
+    """T† must exactly invert T for any input vector."""
+    import numpy as np
+    fiber = MultimodeFiber(modes=64, seed=7)
+    v = np.random.randn(64) + 1j * np.random.randn(64)
+    speckle = fiber.transmit(v)
+    recovered = fiber.phase_conjugate_recovery(speckle)
+    assert np.allclose(v, recovered, atol=1e-10), "DPC must recover original vector exactly"
+
+
+def test_mmf_speckle_is_scrambled():
+    """Transmitted speckle must not resemble the input hologram."""
+    import numpy as np
+    manifold = STAGEHelixEncoder.generate_helix(2, num_points=64)
+    hologram = SpatialLightModulator.create_hologram(manifold)
+    fiber = MultimodeFiber(modes=64, seed=42)
+    speckle = fiber.transmit(hologram)
+    # Correlation between input and output should be near zero
+    corr = abs(np.dot(np.conj(hologram / np.linalg.norm(hologram)),
+                      speckle / np.linalg.norm(speckle)))
+    assert corr < 0.3, f"Speckle too correlated with input: corr={corr:.3f}"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end holographic pipeline
+# ---------------------------------------------------------------------------
+
+def test_holographic_adversary_phi_near_zero():
+    """Adversary reading raw speckle must get Phi ≈ 0 (data completely shredded)."""
+    r = run_holographic_pipeline(data_symbol=2, resolution=64, seed=42)
+    assert r["phi_adversary"] < 0.05, (
+        f"Adversary Phi should be near 0, got {r['phi_adversary']:.6f}"
+    )
+
+
+def test_holographic_receiver_phi_near_one():
+    """Authorized DPC receiver must recover Phi ≈ 1.0."""
+    r = run_holographic_pipeline(data_symbol=2, resolution=64, seed=42)
+    assert r["phi_receiver"] > 0.999, (
+        f"Receiver Phi should be ≈ 1, got {r['phi_receiver']:.6f}"
+    )
+
+
+def test_holographic_security_gap():
+    """Security gap (phi_receiver - phi_adversary) must be > 0.95."""
+    r = run_holographic_pipeline(data_symbol=0, resolution=64, seed=7)
+    gap = r["phi_receiver"] - r["phi_adversary"]
+    assert gap > 0.95, f"Security gap too small: {gap:.6f}"
+
+
+def test_holographic_multiple_symbols():
+    """Pipeline works correctly for several OAM symbols."""
+    for symbol in (0, 1, 2, 5):
+        r = run_holographic_pipeline(data_symbol=symbol, resolution=64, seed=42)
+        assert r["phi_receiver"] > 0.999, (
+            f"symbol={symbol}: receiver Phi={r['phi_receiver']:.6f}"
+        )
+        assert r["phi_adversary"] < 0.05, (
+            f"symbol={symbol}: adversary Phi={r['phi_adversary']:.6f}"
+        )
+
+
+def test_holographic_different_seeds():
+    """Different fiber instances (different T) still give secure recovery."""
+    import numpy as np
+    for seed in (1, 13, 99, 2024):
+        np.random.seed(seed)
+        r = run_holographic_pipeline(data_symbol=1, resolution=32, seed=seed)
+        assert r["phi_receiver"] > 0.999, f"seed={seed}: receiver Phi={r['phi_receiver']:.6f}"
+        assert r["phi_adversary"] < 0.10, f"seed={seed}: adversary Phi={r['phi_adversary']:.6f}"
 
 
 # ---------------------------------------------------------------------------

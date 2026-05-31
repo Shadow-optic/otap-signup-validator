@@ -6,6 +6,13 @@ from .fiber_channel import FiberSpec, OtapFiberChannel
 from .drift import LinkState, DynamicCoherenceTracker, run_drift_scenario, chronos_slowramp_sweep
 from .layered import LayeredTracker, run_layered_sweep
 from .pdl_sweep import measure_normalized_deviation, run_pdl_sweep, crossing
+from .holographic import (
+    STAGEHelixEncoder,
+    SpatialLightModulator,
+    MultimodeFiber,
+    measure_holographic_coherence,
+    run_holographic_pipeline,
+)
 
 __all__ = [
     "SpacetimePoint",
@@ -23,4 +30,9 @@ __all__ = [
     "measure_normalized_deviation",
     "run_pdl_sweep",
     "crossing",
+    "STAGEHelixEncoder",
+    "SpatialLightModulator",
+    "MultimodeFiber",
+    "measure_holographic_coherence",
+    "run_holographic_pipeline",
 ]
