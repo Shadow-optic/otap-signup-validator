@@ -134,12 +134,14 @@ pub fn derive_trajectory(
 
     // Expand 32 bytes of HMAC output to TRAJECTORY_SAMPLES Stokes vectors.
     // Each sample needs 3 floats; we re-key with a counter for >32 bytes.
+    let mut base_mac = HmacSha256::new_from_slice(secret.bytes())
+        .expect("HMAC-SHA256 accepts any key length");
+    base_mac.update(b"OTAP-D3-SAMPLE-v1");
+    base_mac.update(&tag);
+
     let mut samples = [StokesVector::H; TRAJECTORY_SAMPLES];
     for (i, slot) in samples.iter_mut().enumerate() {
-        let mut sample_mac = HmacSha256::new_from_slice(secret.bytes())
-            .expect("HMAC-SHA256 accepts any key length");
-        sample_mac.update(b"OTAP-D3-SAMPLE-v1");
-        sample_mac.update(&tag);
+        let mut sample_mac = base_mac.clone();
         sample_mac.update(&(i as u16).to_be_bytes());
         let sample_bytes = sample_mac.finalize().into_bytes();
         *slot = stokes_from_bytes(&sample_bytes[..6]);
