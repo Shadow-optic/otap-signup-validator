@@ -57,18 +57,32 @@ mod tests {
 
     #[test]
     fn rpc_domain_isolation() {
-        let syms = vec![Symbol { value: 500, lambda: 10, pol: Polarization::H }];
+        let syms = vec![Symbol {
+            value: 500,
+            lambda: 10,
+            pol: Polarization::H,
+        }];
         let rpc_link = calculate_rpc(&syms, RpcDomain::LinkData as u32, 42);
         let rpc_ctrl = calculate_rpc(&syms, RpcDomain::ControlPlane as u32, 42);
-        assert_ne!(rpc_link, rpc_ctrl, "same payload must produce different RPCs across domains");
+        assert_ne!(
+            rpc_link, rpc_ctrl,
+            "same payload must produce different RPCs across domains"
+        );
     }
 
     #[test]
     fn rpc_epoch_isolation() {
-        let syms = vec![Symbol { value: 500, lambda: 10, pol: Polarization::H }];
+        let syms = vec![Symbol {
+            value: 500,
+            lambda: 10,
+            pol: Polarization::H,
+        }];
         let rpc_a = calculate_rpc(&syms, 0, 100);
         let rpc_b = calculate_rpc(&syms, 0, 200);
-        assert_ne!(rpc_a, rpc_b, "same payload must produce different RPCs across epochs");
+        assert_ne!(
+            rpc_a, rpc_b,
+            "same payload must produce different RPCs across epochs"
+        );
     }
 
     #[test]

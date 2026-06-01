@@ -60,10 +60,7 @@ impl PersistentReplayCache {
     }
 
     /// Check if a transcript hash has been seen. If not, persist it.
-    pub fn check_and_insert(
-        &mut self,
-        transcript: [u8; HASH_SIZE],
-    ) -> Result<(), &'static str> {
+    pub fn check_and_insert(&mut self, transcript: [u8; HASH_SIZE]) -> Result<(), &'static str> {
         // Constant-time scan
         for prev in &self.in_memory_cache {
             if prev.ct_eq(&transcript).into() {

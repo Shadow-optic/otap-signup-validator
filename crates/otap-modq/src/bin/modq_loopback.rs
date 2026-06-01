@@ -5,7 +5,7 @@
 //! payloads and polls completions, validating the full ring buffer lifecycle.
 
 use otap_modq::bar::{self, BarMapping};
-use otap_modq::ring::{SLOT_FREE, SLOT_READY, SLOT_DONE};
+use otap_modq::ring::{SLOT_FREE, SLOT_READY};
 use otap_modq::{ModqQueue, ModqConfig, TransportMode};
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -130,7 +130,7 @@ fn main() {
 /// This mimics what `otap_app_core.v` does via DMA on the real hardware.
 fn simulated_fpga_consumer(running: Arc<AtomicBool>) {
     // Open the same shared memory region
-    let slot_stride = ((SLOT_SIZE as usize + 16 + 63) & !63) as usize;
+    let slot_stride = (SLOT_SIZE as usize + 16 + 63) & !63;
     let total_size = bar::regs::RING_BASE + slot_stride * RING_DEPTH as usize;
 
     let bar = BarMapping::open_shm(SHM_NAME, total_size)

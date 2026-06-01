@@ -292,7 +292,7 @@ pub mod writer {
         let entry = schema_id as usize;
         let word_off = REG_SCHEMA_PAYLOAD_BASE + (entry / 2) * 4;
         let mut word = rf.read_u32(word_off)?;
-        if entry % 2 == 0 {
+        if entry.is_multiple_of(2) {
             // low half
             word = (word & 0xFFFF_0000) | (payload_bytes as u32);
         } else {
@@ -394,7 +394,7 @@ pub mod view {
             let entry = schema_id as usize;
             let word_off = REG_SCHEMA_PAYLOAD_BASE + (entry / 2) * 4;
             let word = self.rf.read_u32(word_off)?;
-            let half = if entry % 2 == 0 {
+            let half = if entry.is_multiple_of(2) {
                 word & 0xFFFF
             } else {
                 (word >> 16) & 0xFFFF

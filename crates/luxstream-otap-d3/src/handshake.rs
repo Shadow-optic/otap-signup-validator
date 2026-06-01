@@ -105,7 +105,11 @@ impl HsMsg2 {
         server_pk.copy_from_slice(&buf[..PUBKEY_LEN]);
         nonce_r.copy_from_slice(&buf[PUBKEY_LEN..PUBKEY_LEN + NONCE_LEN]);
         sig_r.copy_from_slice(&buf[PUBKEY_LEN + NONCE_LEN..]);
-        Ok(Self { server_pk, nonce_r, sig_r })
+        Ok(Self {
+            server_pk,
+            nonce_r,
+            sig_r,
+        })
     }
 }
 
@@ -259,8 +263,8 @@ impl<'a, A: ClientAcl> Responder<'a, A> {
             return Err(HsError::NotAuthorized);
         }
 
-        let client_pk = D3VerifyingKey::from_bytes(&msg1.client_pk)
-            .map_err(|_| HsError::BadClientSig)?;
+        let client_pk =
+            D3VerifyingKey::from_bytes(&msg1.client_pk).map_err(|_| HsError::BadClientSig)?;
 
         let mut nonce_r = [0u8; NONCE_LEN];
         rand::rngs::OsRng.fill_bytes(&mut nonce_r);
