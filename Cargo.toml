@@ -12,6 +12,7 @@ members = [
     "crates/otap-fabric",
     "crates/otap-modq",
     "crates/otap-cli",
+    "crates/otap-bench",
 ]
 
 [workspace.package]

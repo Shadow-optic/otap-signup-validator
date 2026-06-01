@@ -13,6 +13,18 @@ from .holographic import (
     measure_holographic_coherence,
     run_holographic_pipeline,
 )
+from .geometric_encoding import (
+    TPPEncoder,
+    HopfKnotEncoder,
+    NPMEncoder,
+    E8Encoder,
+    BerryPhaseEncoder,
+    GIESymbol,
+    GIEEncoder,
+    capacity_projection,
+    SCHEME_BITS,
+    SCHEME_TRL,
+)
 
 __all__ = [
     "SpacetimePoint",
@@ -35,4 +47,14 @@ __all__ = [
     "MultimodeFiber",
     "measure_holographic_coherence",
     "run_holographic_pipeline",
+    "TPPEncoder",
+    "HopfKnotEncoder",
+    "NPMEncoder",
+    "E8Encoder",
+    "BerryPhaseEncoder",
+    "GIESymbol",
+    "GIEEncoder",
+    "capacity_projection",
+    "SCHEME_BITS",
+    "SCHEME_TRL",
 ]

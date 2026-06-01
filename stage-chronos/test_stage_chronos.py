@@ -643,6 +643,246 @@ def test_holographic_different_seeds():
 
 
 # ---------------------------------------------------------------------------
+# Geometric Sub-Encoding tests (Schemes A–F)
+# ---------------------------------------------------------------------------
+
+from stage_chronos import (
+    TPPEncoder, HopfKnotEncoder, NPMEncoder, E8Encoder,
+    BerryPhaseEncoder, GIESymbol, GIEEncoder,
+    capacity_projection, SCHEME_BITS,
+)
+
+
+# Scheme A: Toroidal Phase-Polarization
+
+def test_tpp_constellation_size():
+    enc = TPPEncoder(M1=8, M2=8)
+    pts = enc.full_constellation()
+    assert len(pts) == 64, f"Expected 64 TPP points, got {len(pts)}"
+
+
+def test_tpp_encode_decode_roundtrip():
+    enc = TPPEncoder(M1=8, M2=8)
+    for symbol in range(64):
+        pt = enc.encode_symbol(symbol)
+        assert pt is not None
+        r = (pt.x**2 + pt.y**2 + pt.z**2) ** 0.5
+        assert 0 < r < 10.0, f"Symbol {symbol}: radius {r} out of range"
+
+
+def test_tpp_capacity():
+    enc = TPPEncoder(M1=8, M2=8)
+    import math
+    assert abs(enc.capacity_bits() - 6.0) < 1e-9, f"TPP capacity should be 6 bits"
+
+
+def test_tpp_min_distance_positive():
+    enc = TPPEncoder(R=2.0, r=0.5, M1=8, M2=8)
+    assert enc.min_distance() > 0.0
+
+
+def test_tpp_points_on_torus():
+    enc = TPPEncoder(R=2.0, r=0.5, M1=8, M2=8)
+    pts = enc.full_constellation()
+    for pt in pts:
+        # Distance from torus axis in xy plane
+        rho = (pt.x**2 + pt.y**2) ** 0.5
+        # Distance from torus tube center = |rho - R|
+        dist_from_center = ((rho - enc.R)**2 + pt.z**2) ** 0.5
+        assert abs(dist_from_center - enc.r) < 1e-9, \
+            f"Point not on torus: dist={dist_from_center:.6f}, r={enc.r}"
+
+
+# Scheme B: Hopf Knot
+
+def test_hopf_valid_knots_count():
+    knots = HopfKnotEncoder.VALID_KNOTS
+    assert len(knots) >= 25, f"Expected ≥25 valid knots, got {len(knots)}"
+
+
+def test_hopf_encode_point_count():
+    enc = HopfKnotEncoder(num_points=100)
+    pts = enc.encode(2, 3)
+    assert len(pts) == 100
+
+
+def test_hopf_knot_types_distinct():
+    import numpy as np
+    enc = HopfKnotEncoder(num_points=100)
+    # z(φ) = sin(q·φ) has dominant DFT frequency at bin q — use this to distinguish
+    def dominant_z_freq(pts):
+        z = np.array([p.z for p in pts])
+        return int(np.argmax(np.abs(np.fft.rfft(z)[1:]))) + 1
+    # T(2,3): z oscillates at frequency 3; T(2,5): frequency 5
+    assert dominant_z_freq(enc.encode(2, 3)) == 3
+    assert dominant_z_freq(enc.encode(2, 5)) == 5
+    assert dominant_z_freq(enc.encode(3, 4)) == 4
+
+
+def test_hopf_writhe():
+    enc = HopfKnotEncoder()
+    assert enc.writhe(2, 3) == 6
+    assert enc.writhe(3, 5) == 15
+
+
+def test_hopf_topology_bits():
+    enc = HopfKnotEncoder()
+    bits = enc.topology_bits()
+    assert 4.0 < bits < 6.0, f"Topology bits {bits:.2f} expected ~4.9"
+
+
+# Scheme C: NPM
+
+def test_npm_microconstellation_size():
+    enc = NPMEncoder(K=16)
+    pts = enc.full_microconstellation(0.0, 0.0)
+    assert len(pts) == 16
+
+
+def test_npm_points_near_qam_symbol():
+    enc = NPMEncoder(K=16, epsilon=0.1)
+    I, Q = 3.0, 5.0
+    pts = enc.full_microconstellation(I, Q)
+    for pt in pts:
+        dist = ((pt.x - I)**2 + (pt.y - Q)**2 + pt.z**2) ** 0.5
+        assert abs(dist - enc.epsilon) < 1e-9, f"Micro-point not at radius ε: dist={dist:.6f}"
+
+
+def test_npm_capacity():
+    enc = NPMEncoder(K=16)
+    assert abs(enc.capacity_bits() - 4.0) < 1e-9
+
+
+def test_npm_fibonacci_sphere_unit_radius():
+    import numpy as np
+    enc = NPMEncoder(K=32)
+    norms = np.linalg.norm(enc._offsets, axis=1)
+    assert float(np.max(np.abs(norms - 1.0))) < 1e-9, "Fibonacci sphere points should be unit vectors"
+
+
+# Scheme D: E8
+
+def test_e8_kissing_number():
+    enc = E8Encoder()
+    assert len(enc.vectors) == 240, f"E8 kissing number = 240, got {len(enc.vectors)}"
+
+
+def test_e8_all_vectors_norm_sqrt2():
+    import numpy as np
+    enc = E8Encoder()
+    norms_sq = np.sum(enc.vectors ** 2, axis=1)
+    assert float(np.max(np.abs(norms_sq - 2.0))) < 1e-9, "All E8 kissing vectors should have norm² = 2"
+
+
+def test_e8_coding_gain():
+    enc = E8Encoder()
+    assert abs(enc.coding_gain_db() - 3.01) < 1e-9
+    assert abs(enc.total_gain_db() - 3.66) < 1e-9
+
+
+def test_e8_encode_4d():
+    enc = E8Encoder()
+    for idx in [0, 50, 100, 200, 239]:
+        pt = enc.encode_4d(idx)
+        assert pt is not None
+
+
+def test_e8_encode_8d_pair():
+    enc = E8Encoder()
+    p1, p2 = enc.encode_8d(0)
+    v = enc.vectors[0]
+    assert abs(p1.x - v[1]) < 1e-9 and abs(p2.x - v[5]) < 1e-9
+
+
+# Scheme E: Berry Phase
+
+def test_berry_encode_path_count():
+    enc = BerryPhaseEncoder(M=64, num_path_points=32)
+    pts = enc.encode(0)
+    assert len(pts) == 32
+
+
+def test_berry_phase_levels():
+    enc = BerryPhaseEncoder(M=64)
+    # Level 0 → phase 0
+    assert abs(enc.berry_phase(0)) < 1e-9
+    # Level 32 → phase π
+    assert abs(enc.berry_phase(32) - 3.14159265) < 0.01
+
+
+def test_berry_path_on_unit_sphere():
+    enc = BerryPhaseEncoder(M=64, num_path_points=32)
+    for idx in [1, 16, 32, 48]:
+        pts = enc.encode(idx)
+        for pt in pts:
+            r = (pt.x**2 + pt.y**2 + pt.z**2) ** 0.5
+            assert abs(r - 1.0) < 1e-9, f"Berry path point not on unit sphere: r={r}"
+
+
+def test_berry_capacity():
+    enc = BerryPhaseEncoder(M=64)
+    assert abs(enc.capacity_bits() - 6.0) < 1e-9
+
+
+# Scheme F: GIE
+
+def test_gie_encode_produces_symbol():
+    enc = GIEEncoder()
+    sym = enc.encode(pol_idx=3, oam_l=2, phase_idx=5, berry_idx=7)
+    assert isinstance(sym, GIESymbol)
+    assert sym.l_oam == 2
+
+
+def test_gie_symbol_to_spacetime_points():
+    sym = GIESymbol(theta_pol=1.0, phi_pol=0.5, l_oam=3, gamma_berry=1.57, amplitude=1.0)
+    pts = sym.to_spacetime_points()
+    assert len(pts) == 2
+    assert pts[0].t == 3   # l_oam encodes in time coordinate
+
+
+def test_gie_phi_identity():
+    enc = GIEEncoder()
+    sym = enc.encode(pol_idx=2, oam_l=1, phase_idx=4, berry_idx=8)
+    phi = enc.measure_phi(sym, sym)
+    assert phi > 0.999, f"GIE identity Φ should be ≈1, got {phi:.4f}"
+
+
+def test_gie_phi_corrupted():
+    enc = GIEEncoder()
+    sym_tx = enc.encode(pol_idx=0, oam_l=0, phase_idx=0, berry_idx=0)
+    sym_rx = enc.encode(pol_idx=7, oam_l=5, phase_idx=7, berry_idx=15, amplitude=2.0)
+    phi = enc.measure_phi(sym_tx, sym_rx)
+    assert phi < 0.95, f"GIE corrupted Φ should be < 0.95, got {phi:.4f}"
+
+
+def test_gie_capacity_bits():
+    enc = GIEEncoder(oam_levels=8, berry_levels=16, pol_M1=8, pol_M2=8)
+    bits = enc.capacity_bits()
+    assert bits > 12.0, f"GIE combined capacity should be > 12 bits, got {bits:.2f}"
+
+
+# Capacity projections
+
+def test_capacity_projection_baseline():
+    # No schemes active → baseline 115 Tbps
+    proj = capacity_projection([])
+    assert abs(proj - 115.0) < 1e-6
+
+
+def test_capacity_projection_npm():
+    proj = capacity_projection(['C_NPM'])
+    # 4 bits on top of 12 bits DP-64QAM = (16/12) × 115
+    expected = 115.0 * (16.0 / 12.0)
+    assert abs(proj - expected) < 0.01, f"NPM projection: {proj:.1f} vs {expected:.1f}"
+
+
+def test_capacity_projection_all_schemes():
+    all_schemes = ['A_TPP', 'B_Hopf', 'C_NPM', 'D_E8', 'E_Berry']
+    proj = capacity_projection(all_schemes)
+    assert proj > 400.0, f"All schemes should exceed 400 Tbps, got {proj:.1f}"
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 

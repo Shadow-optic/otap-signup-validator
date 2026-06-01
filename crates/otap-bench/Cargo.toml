@@ -1,0 +1,19 @@
+[package]
+name = "otap-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Corrected benchmark harness: lock-free SPSC ring, batch ops, adaptive backpressure, MPMC work-stealing. Fixes the 160× latency measurement artifact in the original OTAP benchmark."
+license = "MIT"
+
+[dependencies]
+hdrhistogram = "7"
+crossbeam-utils = "0.8"
+libc = "0.2"
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
