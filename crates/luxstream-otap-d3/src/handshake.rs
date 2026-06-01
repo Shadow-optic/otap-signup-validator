@@ -309,6 +309,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_derive_epoch_nonce() {
+        let n_i = [1u8; NONCE_LEN];
+        let n_r = [2u8; NONCE_LEN];
+
+        let epoch_nonce = derive_epoch_nonce(&n_i, &n_r);
+
+        // This value is computed statically:
+        // sha256(b"OTAP-EPOCH-v1" || [1; 32] || [2; 32])
+        // First 8 bytes as big-endian u64 = 5693305317403519111
+        assert_eq!(epoch_nonce, 5693305317403519111);
+
+        // Ensure changing inputs changes the output
+        let n_i2 = [0xAA; NONCE_LEN];
+        let n_r2 = [0xBB; NONCE_LEN];
+        let epoch_nonce2 = derive_epoch_nonce(&n_i2, &n_r2);
+        assert_ne!(epoch_nonce, epoch_nonce2);
+        assert_eq!(epoch_nonce2, 13484738608632071519);
+    }
+
+    #[test]
     fn full_handshake_derives_same_epoch() {
         let alice_sk = D3SigningKey::from_bytes(&[1u8; 32]);
         let bob_sk = D3SigningKey::from_bytes(&[2u8; 32]);
