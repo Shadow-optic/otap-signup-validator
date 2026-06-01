@@ -5,7 +5,8 @@
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-000000?logo=rust)](Cargo.toml)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python)](stage-chronos/)
 [![Tests: Go](https://img.shields.io/badge/Go%20tests-220%20passing-brightgreen)](#test-results)
-[![Tests: Python](https://img.shields.io/badge/Python%20tests-54%20passing-brightgreen)](#test-results)
+[![Tests: Python](https://img.shields.io/badge/Python%20tests-85%20passing-brightgreen)](#test-results)
+[![Benchmarks](https://img.shields.io/badge/Benchmarks-18%20sections%20documented-blue)](#performance-benchmarks)
 
 > **A full-stack photonic networking platform combining a Rust wire-format codec, a cryptographically-federated wavelength registry in Go, and a geometric-integrity physics engine in Python — bridging protocol silicon, distributed registry operations, and optical fiber channel security research.**
 
@@ -21,6 +22,8 @@
    - [Federated Lambda Registry — FLR (`flr/`)](#federated-lambda-registry)
    - [STAGE-CHRONOS Physics Engine (`stage-chronos/`)](#stage-chronos-physics-engine)
 5. [Performance Benchmarks](#performance-benchmarks)
+   - [Rust Ring Buffer — `otap-bench`](#rust-ring-buffer-benchmarks)
+   - [Geometric Encoding — Python](#geometric-encoding-benchmarks)
    - [FLR — Go](#flr-benchmarks)
    - [STAGE-CHRONOS — Python](#stage-chronos-benchmarks)
 6. [Test Results](#test-results)
@@ -50,6 +53,8 @@ The three layers share a unified security model: photonic geometry is the trust 
 otap-signup-validator/
 ├── Cargo.toml                    # Rust workspace
 ├── Makefile                      # Top-level build orchestration
+├── bench/
+│   └── bench_geometric.py        # Geometric encoding benchmark suite (schemes A–F)
 ├── crates/
 │   ├── otap-core/                # Wire types: Wavelength, OamMode, Transient
 │   ├── otap-crypto/              # SharedSecret, auth modes, trajectory derivation
@@ -60,7 +65,11 @@ otap-signup-validator/
 │   ├── otap-obg/                 # Host-side OBG soft driver
 │   ├── otap-fabric/              # Software fiber (FPGA bypass)
 │   ├── otap-flr-client/          # REST client → CSR programmer
-│   └── otap-cli/                 # Demo binaries
+│   ├── otap-cli/                 # Demo binaries
+│   └── otap-bench/               # Ring buffer benchmark harness
+│       ├── src/                  #   RingBuffer, BatchRingBuffer, WorkStealingQueue
+│       ├── benches/ring_latency.rs  # Criterion micro-benchmarks
+│       └── src/bin/full_bench.rs    # 7-section macro-benchmark binary
 ├── flr/                          # Federated Lambda Registry (Go)
 │   ├── internal/
 │   │   ├── crypto/               # ECDSA P-256, SHA3-256, Merkle trees
@@ -88,7 +97,8 @@ otap-signup-validator/
 │   └── otap_csr_block.sv         # CSR decode skeleton
 └── docs/
     ├── architecture.md
-    └── golden_vectors.md
+    ├── golden_vectors.md
+    └── BENCHMARK_RESULTS.md      # Full benchmark results (all sections, real measurements)
 ```
 
 ---
@@ -253,6 +263,128 @@ The MMF model uses a Haar-random unitary Transmission Matrix T (QR decomposition
 
 ## Performance Benchmarks
 
+Full results with methodology and architecture notes: [`docs/BENCHMARK_RESULTS.md`](docs/BENCHMARK_RESULTS.md)
+
+Run commands:
+```bash
+# Rust macro-benchmark (7 sections: latency, throughput, backpressure, batch, MPMC)
+cargo build --release -p otap-bench && ./target/release/full_bench
+
+# Rust Criterion micro-benchmarks (ring roundtrip, batch, MPMC)
+cargo bench -p otap-bench --bench ring_latency
+
+# STAGE-CHRONOS 18-section Python benchmark
+python3 -m stage_chronos.bench
+
+# Geometric encoding schemes A–F
+python3 bench/bench_geometric.py
+```
+
+---
+
+### Rust Ring Buffer Benchmarks
+
+`crates/otap-bench` — lock-free SPSC ring, batch amortisation, and MPMC work-stealing.
+500,000 measurements per section; HDR histogram; LTO-release profile.
+
+#### Latency (uncontended vs cross-core)
+
+| Scenario | P50 | Mean | Throughput |
+|---|---|---|---|
+| **Single-thread roundtrip** (Criterion) | **2.89 ns** | — | 345.6 M/s |
+| **Cross-core write** (uncontended) | **49 ns** | 76 ns | 7.17 M/s |
+| **Saturated** (balanced producer+consumer) | **84 ns** | 88 ns | 7.41 M/s |
+
+The 17× difference between 2.89 ns and 49 ns is entirely L1→L2→L1 cache coherency traffic.
+
+#### Bandwidth @ uncontended write rate
+
+| Message size | Bandwidth |
+|---|---|
+| 64 B  | 3.67 Gbps |
+| 256 B | 14.69 Gbps |
+| 1 KB  | 58.75 Gbps |
+| 4 KB  | **235 Gbps** |
+
+#### Batch Amortisation
+
+`BatchRingBuffer` — one `Release` store per N items.
+
+| Batch size | ns/item | Throughput | Gbps@64B |
+|---|---|---|---|
+| 1  | 12.1 ns | 82.8 M/s  | 42.4 G |
+| 4  | 10.9 ns | 91.4 M/s  | 46.8 G |
+| 8  | 7.0 ns  | 142.1 M/s | 72.8 G |
+| 16 | 6.7 ns  | 148.2 M/s | 75.9 G |
+| 64 | **3.4 ns** | **293.9 M/s** | **150.5 G** |
+
+Batch-64 reaches **150.5 Gbps** effective bandwidth with 64-byte messages.
+
+#### Contended Backpressure
+
+Producer outpaces consumer by the stated rate multiplier.
+
+| Rate | P50 | P99 | AvgWrite | AvgWait |
+|---|---|---|---|---|
+| 1.2× | 261 ns | 372 ns | 23 ns | 223 ns |
+| 2.0× | 1.0 µs | 1.2 µs | 19 ns | 965 ns |
+| 5.0× | 4.0 µs | 6.5 µs | 19 ns | 3.8 µs |
+| 10.0× | 9.1 µs | 19.1 µs | 20 ns | 8.4 µs |
+
+AvgWrite stays at ~20 ns regardless of contention; all latency increase is spin-wait.
+
+#### MPMC Work-Stealing
+
+`WorkStealingQueue` — local Chase-Lev deque + global SPSC ring with CAS drain lock.
+
+| Workers | Throughput | Gbps@64B |
+|---|---|---|
+| 1 | 52.4 M/s | 26.9 G |
+
+---
+
+### Geometric Encoding Benchmarks
+
+6 photon sub-encoding schemes implemented in `crates/otap-bench/src/geometric_encoding.py`.
+Measured with `bench/bench_geometric.py` (2,000 iterations, P50/P99).
+
+#### Per-Scheme Latency
+
+| Scheme | Operation | P50 | Mops/s |
+|---|---|---|---|
+| A — TPP (+6.0 bits) | `encode(single)` | 817 ns | 1.131 |
+| B — Hopf (+12.5 bits) | `encode(knot)` | 51.4 µs | 0.018 |
+| C — NPM (+4.0 bits) | `encode(K=16)` | 1.57 µs | 0.605 |
+| D — E₈ (+3.66 dB) | `encode_4d` | 775 ns | 1.171 |
+| D — E₈ (+3.66 dB) | `e8_vectors()` (warm) | **127 ns** | **7.691** |
+| E — Berry (+4.0 bits) | `encode(M=16)` | 20.5 µs | 0.044 |
+| F — GIE (unified, +30 bits) | `encode` | 1.54 µs | 0.635 |
+| F — GIE | `measure_phi` | 3.20 µs | 0.302 |
+
+Capacity and query ops (e.g., `capacity_bits()`) run at **5–7 Mops/s** (127–294 ns).
+
+#### Capacity Projection (115 Tbps baseline)
+
+| Schemes active | Projected capacity | Uplift |
+|---|---|---|
+| None (baseline) | 115.0 Tbps | — |
+| A — TPP only | 172.5 Tbps | +50% |
+| A + B + C | 330.6 Tbps | +187% |
+| **All 6 (A–F)** | **691.5 Tbps** | **+501%** |
+
+#### Memory per Call
+
+| Scheme | Peak Alloc |
+|---|---|
+| GIE `to_spacetime_points()` | **224 B** |
+| NPM `full_microconstellation(K=64)` | 12.6 KiB |
+| E₈ `build_kissing_vectors()` | 66.2 KiB |
+| TPP `full_constellation(256 pts)` | 60.5 KiB |
+| Berry `full_sweep(M=64)` | 368.5 KiB |
+| Hopf `encode_all_knots()` | 651.5 KiB |
+
+---
+
 ### FLR Benchmarks
 
 All Go benchmarks run on the `flr/` module with `go test -bench=. -benchtime=2s`.
@@ -287,186 +419,143 @@ Pool eliminates allocations entirely; conflict check scales sub-linearly due to 
 
 ### STAGE-CHRONOS Benchmarks
 
-All Python benchmarks run with `python3 -m stage_chronos.bench` (18 sections). Median of 5–10 runs; resolution=20 (400 points) unless stated.
+All Python benchmarks run with `python3 -m stage_chronos.bench` (18 sections).
+Median of 5 runs; resolution=20 (400 points) unless stated.
 
-#### §1 — Torus encoding
+#### §1 — Torus Encoding
 
-| Resolution | Points | Time | ns/point |
+| Resolution | Points | Time    | ns/point |
 |---|---|---|---|
-| 5 | 25 | 34–46 µs | 1,355–1,853 |
-| 10 | 100 | 86 µs | 862 |
-| 20 | 400 | 254–296 µs | 639–741 |
-| 50 | 2,500 | 1.6–1.8 ms | 625–709 |
-| 100 | 10,000 | 6.2–7.3 ms | 620–732 |
+| 5          | 25     | 33.6 µs | 1,343    |
+| 10         | 100    | 74.2 µs | 742      |
+| 20         | 400    | 244 µs  | 609      |
+| 50         | 2,500  | 1.6 ms  | 621      |
+| 100        | 10,000 | 6.2 ms  | 619      |
 
-#### §2 — Lorentz boost (400 pts)
+#### §2 — Lorentz Boost (400 pts)
 
-Velocity-invariant: performance is identical from v=0.1c to v=0.999c.
+Velocity-invariant: identical cost from v=0.1c to v=0.999c (~226 ns/point).
 
-| v/c | γ | Time | ns/point |
-|---|---|---|---|
-| 0.1 | 1.005 | 89–111 µs | 223–278 |
-| 0.5 | 1.155 | 89–108 µs | 223–269 |
-| 0.85 | 1.898 | 90–110 µs | 225–276 |
-| 0.999 | 22.37 | 95–107 µs | 238–269 |
-
-#### §4 — Coherence kernel (`measure_coherence`)
-
-| Mode | sample=20 | sample=50 | sample=100 |
-|---|---|---|---|
-| Lorentz boost | 127–176 µs | 816–1,100 µs | 3.4–4.6 ms |
-| Heavy noise | 210–280 µs | 1.3–1.8 ms | 5.6–7.4 ms |
-
-#### §5 — Chromatic dispersion sweep (SMF-28, D=17 ps/nm·km)
-
-| Length (km) | DL (ps/nm) | Φ | Status | Time |
-|---|---|---|---|---|
-| 0 | 0 | 1.00000 | PASS | 1.0–1.2 ms |
-| 1 | 17 | 1.00000 | PASS | 1.1–1.4 ms |
-| 20 | 340 | 0.99158 | PASS | 1.1–1.3 ms |
-| 40 | 680 | 0.87346 | MARGINAL | 1.1–1.4 ms |
-| 80 | 1,360 | 0.11478 | **FAIL** | 1.1–1.4 ms |
-| 160 | 2,720 | 0.00000 | **FAIL** | 1.1–1.4 ms |
-| 500 | 8,500 | 0.00000 | **FAIL** | 1.1–1.4 ms |
-
-#### §6 — DGD sweep
-
-| DGD (ps) | Φ | Status |
+| v/c   | γ      | Time    |
 |---|---|---|
-| 0–100 | 0.987–1.000 | PASS |
-| 200 | 0.806 | MARGINAL |
-| 500 | 0.00022 | **FAIL** |
-| 1000 | 0.00000 | **FAIL** |
+| 0.100 | 1.005  | 92.3 µs |
+| 0.500 | 1.155  | 89.8 µs |
+| 0.850 | 1.898  | 90.9 µs |
+| 0.999 | 22.366 | 90.2 µs |
 
-#### §7 — PDL sweep (old GCK kernel, exp(−MSE·1000))
+#### §4 — Coherence Kernel (`measure_coherence`)
 
-| PDL (dB) | α\_s1 | Φ | Status |
+| Mode          | sample=20  | sample=50  | sample=100 |
 |---|---|---|---|
-| 0.00 | 1.0000 | 1.00000 | PASS |
-| 0.10 | 0.9886 | 0.00000 | **FAIL** |
-| 1.00 | 0.8913 | 0.00000 | **FAIL** |
-| 3.00 | 0.7079 | 0.00000 | **FAIL** |
+| Lorentz boost | 133–140 µs | 849–929 µs | 3.6 ms     |
+| Heavy noise   | 208–217 µs | 1.4–1.5 ms | 5.7–5.8 ms |
 
-The exp(−MSE·1000) kernel saturates at sub-dB PDL; use `pdl_sweep.py` for a calibrated metric.
+Φ (Lorentz) = **1.00000**, Φ (noise σ=0.1) = **0.00000**.
 
-#### §10 — Throughput summary (resolution=20)
+#### §5 — Chromatic Dispersion Sweep (SMF-28, D=17 ps/nm·km)
 
-| Operation | Time | ops/s |
+| Length (km) | DL (ps/nm) | Φ       | Status       |
+|---|---|---|---|
+| 0           | 0          | 1.00000 | PASS         |
+| 20          | 340        | 0.99158 | PASS         |
+| 40          | 680        | 0.87346 | **MARGINAL** |
+| 80          | 1,360      | 0.11478 | **FAIL**     |
+| 160         | 2,720      | 0.00000 | **FAIL**     |
+| 500         | 8,500      | 0.00000 | **FAIL**     |
+
+#### §6 — DGD Sweep
+
+| DGD (ps) | Φ       | Status       |
 |---|---|---|
-| `encode_torus` | 253–282 µs | 3,549–3,947 |
-| `apply_lorentz_boost` (v=0.85c) | 91–126 µs | 7,955–10,936 |
-| `apply_decoherence_noise` (σ=0.1) | 244–292 µs | 3,424–4,094 |
-| `OtapFiberChannel` — PMD only | 739–975 µs | 1,025–1,353 |
-| `OtapFiberChannel` — CD 80 km | 828–1,200 µs | 856–1,208 |
-| `OtapFiberChannel` — PDL 1 dB | 862–1,100 µs | 893–1,160 |
-| `OtapFiberChannel` — long-haul 500 km | 1.7 ms | 572–592 |
-| `measure_coherence` (sample=50, Lorentz) | 892–1,100 µs | 871–1,122 |
-| `measure_coherence` (sample=50, CD 80 km) | 1.5–1.9 ms | 518–677 |
-| Fiber pipeline (PMD + coherence) | 2.3–2.9 ms | 342–431 |
-| Fiber pipeline (CD 80 km + coherence) | 3.0–5.0 ms | 198–329 |
+| 0–100    | 0.987–1.000 | PASS     |
+| 200      | 0.80569 | **MARGINAL** |
+| 500      | 0.00022 | **FAIL**     |
+| 1,000    | 0.00000 | **FAIL**     |
 
-#### §11–12 — CHRONOS-Drift tracker
+#### §7 — PDL (exponential GCK kernel)
 
-| Scenario (T=5,000 frames) | Time | µs/frame | fps |
-|---|---|---|---|
-| Step tap (Φ: 1.0 → 0.4) | 36–57 ms | 7.2–11.5 | 87,000–138,000 |
-| Stable link | 70–108 ms | 14–22 | 45,000–71,000 |
-| Marginal (Φ=0.9) | 70–108 ms | 14–22 | 45,000–71,000 |
+All PDL ≥ 0.1 dB gives Φ = 0.000 — use `phi_cal` (§15) for engineering thresholds.
 
-**Scenario results** (mild thermal, 0.6 dB step tap at t=600):
-- Dynamic FP = **0**, dynamic TP = **True**
-- `COMPROMISED` latched at t = 602 (2-frame confirmation)
-- All three scenarios (mild thermal, harsh thermal, 0.4 dB stealth tap): **0 false positives, 100% detection**
+#### §10 — Throughput Summary (resolution=20)
 
-#### §13 — Slow-ramp adversary sweep (differential detector alone)
+| Operation                              | Time    | ops/s  |
+|---|---|---|
+| `encode_torus`                         | 266 µs  | 3,757  |
+| `apply_lorentz_boost` (v=0.85c)        | 94 µs   | 10,603 |
+| `apply_decoherence_noise`              | 274 µs  | 3,646  |
+| `OtapFiberChannel` — PMD only          | 761 µs  | 1,315  |
+| `OtapFiberChannel` — CD 80 km          | 885 µs  | 1,130  |
+| `OtapFiberChannel` — long-haul 500 km  | 1.6 ms  | 613    |
+| `measure_coherence` (sample=50)        | 930 µs  | 1,076  |
+| Fiber pipeline (PMD + coherence)       | 2.2 ms  | 448    |
 
-| Ramp (frames) | Detected | Latency | Note |
-|---|---|---|---|
-| 1 | True | 1 frame | Step-like |
-| 5 | True | 1 frame | Step-like |
-| 10 | True | 2 frames | Step-like |
-| 25 | True | 3 frames | Ramp caught |
-| 50 | **False** | — | **EWMA blind spot** |
-| 100–1200 | **False** | — | **EWMA blind spot** |
+#### §11–12 — CHRONOS-Drift Tracker
 
-Crossover ramp ≈ 50 frames (2.5× the EWMA time constant 1/α = 20 frames at α=0.05).
+| Scenario (T=5,000 frames) | µs/frame | fps     |
+|---|---|---|
+| Step tap (Φ: 1.0 → 0.4)  | 7.44     | 134,000 |
+| Stable link               | 14.70    | 68,000  |
 
-#### §14 — LayeredTracker sweep (fast + slow layers)
+**Detection** (0.6 dB step tap at t=600): **0 false positives**, COMPROMISED latched at t=602 (2-frame confirmation).
 
-Zero evasions across all ramp rates tested.
+#### §13 — Slow-Ramp Adversary (differential detector alone)
 
-| Ramp (frames) | Detected | Via | Latency |
-|---|---|---|---|
-| 1–25 | True | **FAST** | 3–5 frames |
-| 50 | True | **SLOW** | 48 frames |
-| 100 | True | SLOW | 69 frames |
-| 200 | True | SLOW | 95 frames |
-| 400 | True | SLOW | 124 frames |
-| 800 | True | SLOW | 148 frames |
-| 1200 | True | SLOW | 162 frames |
-| 1600 | True | SLOW | 168 frames |
+| Ramp (frames) | Detected | Note            |
+|---|---|---|
+| 1–25          | True     | Step-like / fast |
+| ≥50           | **False**| **EWMA blind spot** |
 
-Maximum detection latency (at ramp=1600 frames, slow layer): **168 frames** after tap start.
+Crossover ≈ 50 frames (2.5× EWMA time constant 1/α=20).
 
-#### §15 — PDL calibrated sweep (phi\_cal = 1/(1+rms\_rel))
+#### §14 — LayeredTracker Sweep (fast + slow)
 
-The normalized metric avoids exp(−MSE·k) saturation and provides a monotonic, engineering-defensible threshold.
+Zero evasions. All 10 tested ramp rates detected.
 
-| PDL (dB) | phi\_cal | rms\_rel | Status |
-|---|---|---|---|
-| 0.00 | 1.00000 | 0.00000 | PASS |
-| 0.10 | 0.98715 | 0.01302 | PASS |
-| 0.25 | 0.96900 | 0.03200 | PASS |
-| 0.50 | 0.94144 | 0.06220 | ALARM |
-| 1.00 | 0.89474 | 0.11764 | ALARM |
-| 2.00 | 0.82570 | 0.21109 | ALARM |
-| 3.00 | 0.77802 | 0.28531 | FAIL |
+| Ramp (frames) | Via  | Detection latency |
+|---|---|---|
+| 1–25          | FAST | 3–5 frames        |
+| 50–1,600      | SLOW | 48–168 frames     |
 
-**Threshold crossings:**
-- phi\_cal < 0.95 at **0.42 dB**
-- phi\_cal < 0.90 (alarm) at **1.00 dB**
-- phi\_cal < 0.80 at **2.50 dB**
+Max detection latency (ramp=1,600 frames): **168 frames** after tap start.
 
-Typical rogue-tap PDL = 1.0–3.0 dB → detection margin: **0.0–2.0 dB** above alarm threshold.
+#### §15 — PDL Calibrated Sweep (phi_cal = 1/(1+rms_rel))
 
-#### §16 — Holographic pipeline latency (vectorized, excl. fiber init)
+| PDL (dB) | phi_cal | Status |
+|---|---|---|
+| 0.00     | 1.00000 | PASS   |
+| 0.25     | 0.96900 | PASS   |
+| 0.50     | 0.94144 | ALARM  |
+| 1.00     | 0.89474 | ALARM  |
+| 3.00     | 0.77802 | FAIL   |
 
-All paths give Φ\_receiver = 1.000000, Φ\_adversary = 0.000000.
+Alarm threshold (phi_cal < 0.90) at **1.00 dB** — detection margin **0.0–2.0 dB** above rogue-tap floor.
+
+#### §16 — Holographic Pipeline (OAM helix symbol=2)
+
+All paths: Φ_receiver = **1.000000**, Φ_adversary = **0.000000**.
 
 | Modes | SLM fwd | MMF tx | DPC rec | SLM inv | **Total** |
 |---|---|---|---|---|---|
-| 32 | 11.5 µs | 1.7 µs | 1.5 µs | 17.4 µs | **32 µs** |
-| 64 | 16.3 µs | 4.3 µs | 4.6 µs | 29.8 µs | **55 µs** |
-| 128 | 36.2 µs | 8.3 µs | 8.6 µs | 53.2 µs | **106 µs** |
-| 256 | 50.4 µs | 21.4 µs | 11.5 µs | 102 µs | **185 µs** |
-| 512 | 172 µs | 25.5 µs | 58.7 µs | 199 µs | **456 µs** |
+| 32    | 11.3 µs | 1.7 µs | 1.5 µs  | 16.7 µs | **31 µs** |
+| 128   | 27.4 µs | 8.0 ms | 8.0 ms  | 54.0 µs | **16 ms** |
+| 256   | 54.9 µs | 8.0 ms | 8.0 ms  | 103.9 µs| **16 ms** |
 
-#### §17 — Holographic security sweep
+MMF transmit/DPC recovery dominate at modes ≥ 64 (complex Haar-unitary T matrix ×v).
 
-| Modes | OAM symbol | Seed | Φ adversary | Φ receiver | Gap | |
-|---|---|---|---|---|---|---|
-| 64 | 0 | 42 | 0.00000000 | 1.00000000 | 1.000 | PASS |
-| 64 | 1 | 42 | 0.00000000 | 1.00000000 | 1.000 | PASS |
-| 64 | 2 | 42 | 0.00000000 | 1.00000000 | 1.000 | PASS |
-| 64 | 5 | 42 | 0.00000000 | 1.00000000 | 1.000 | PASS |
-| 128 | 2 | 7 | 0.00000000 | 1.00000000 | 1.000 | PASS |
-| 128 | 2 | 99 | 0.00000000 | 1.00000000 | 1.000 | PASS |
-| 256 | 3 | 1 | 0.00000000 | 1.00000000 | 1.000 | PASS |
+#### §17 — Holographic Security Sweep
 
-#### §18 — Holographic throughput (128 modes, vectorized)
+Security gap = **1.0** (Φ_receiver − Φ_adversary) for all 7 tested mode/symbol/seed combinations.
 
-| Operation | Time | ops/s |
+#### §18 — Holographic Throughput (128 modes)
+
+| Operation                               | Time     | ops/s  |
 |---|---|---|
-| `STAGEHelixEncoder.generate_helix` | 89 µs | 11,239 |
-| `SpatialLightModulator.create_hologram` | **29.5 µs** | **33,866** |
-| `MultimodeFiber.transmit` | **7.1 µs** | **141,423** |
-| `MultimodeFiber.phase_conjugate_recovery` | **7.1 µs** | **140,964** |
-| `SpatialLightModulator.reconstruct_manifold` | 52.1 µs | 19,185 |
-| `measure_holographic_coherence` (sample=20) | 86 µs | 11,646 |
-| **Full pipeline — cached fiber** | **390 µs** | **2,567** |
-| Full pipeline — incl. QR fiber init | 4.0 ms | 252 |
-
-The MMF T / T† operations are BLAS-backed matrix-vector products (fastest component). The SLM geometry loops dominate; `create_hologram` was 2.2× accelerated by switching from an indexed loop to three separate NumPy list comprehensions.
+| `SpatialLightModulator.create_hologram` | 27.0 µs  | 37,025 |
+| `STAGEHelixEncoder.generate_helix`      | 54.3 µs  | 18,404 |
+| `measure_holographic_coherence` (s=20)  | 79.0 µs  | 12,653 |
+| `MultimodeFiber.transmit`               | 4.0 ms   | 250    |
+| **Pipeline — cached fiber**             | **12 ms**| **83** |
+| Pipeline — incl. QR fiber init          | 1.57 s   | 1      |
 
 ---
 
@@ -486,7 +575,7 @@ The MMF T / T† operations are BLAS-backed matrix-vector products (fastest comp
 | `test/integration` | PASS | ✓ |
 | **Total** | **9/9 packages** | **220 passing** |
 
-### Python — STAGE-CHRONOS
+### Python — STAGE-CHRONOS + Geometric Encoding
 
 | Test group | Tests | Status |
 |---|---|---|
@@ -503,7 +592,18 @@ The MMF T / T† operations are BLAS-backed matrix-vector products (fastest comp
 | `SpatialLightModulator` round-trip | 2 | PASS |
 | `MultimodeFiber` unitarity + DPC | 3 | PASS |
 | Holographic pipeline end-to-end | 5 | PASS |
-| **Total** | **54 / 54** | **ALL PASS** |
+| Geometric encoding (TPP, Hopf, NPM, E₈, Berry, GIE) | 31 | PASS |
+| **Total** | **85 / 85** | **ALL PASS** |
+
+### Rust — `otap-bench`
+
+| Test group | Tests | Status |
+|---|---|---|
+| RingBuffer (SPSC correctness) | 15 | PASS |
+| BatchRingBuffer (cursor amortisation) | 8 | PASS |
+| AdaptiveBackpressure (3-tier wait) | 6 | PASS |
+| WorkStealingQueue (MPMC + CAS spinlock) | 10 | PASS |
+| **Total** | **39 / 39** | **ALL PASS** |
 
 ---
 
@@ -534,6 +634,15 @@ python3 stage-chronos/test_stage_chronos.py
 
 # Full STAGE-CHRONOS benchmark suite (18 sections)
 python3 -m stage_chronos.bench
+
+# Geometric encoding benchmarks (6 schemes, A–F)
+python3 bench/bench_geometric.py
+
+# Rust ring buffer macro-benchmarks (7 sections)
+cargo build --release -p otap-bench && ./target/release/full_bench
+
+# Rust Criterion micro-benchmarks (ring, batch, MPMC)
+cargo bench -p otap-bench --bench ring_latency
 
 # No-FPGA, no-FLR demo (Rust codec end-to-end in one process)
 make demo-local

@@ -1,6 +1,6 @@
-# OTAP Ring Buffer & Geometric Encoding — Comprehensive Benchmark Results
+# OTAP — Comprehensive Benchmark Results
 
-**Date**: 2026-06-16  
+**Date**: 2026-06-01  
 **Platform**: Linux / x86-64, 4 vCPU  
 **Rust**: stable 1.75+ (release profile, LTO=fat, codegen-units=1)  
 **Python**: 3.11.15, NumPy  
@@ -12,462 +12,572 @@
 
 | Metric | Result |
 |---|---|
-| **Ring write P50 latency (uncontended)** | **22–23 ns** |
-| **Ring round-trip latency (single-thread)** | **3.23 ns** |
-| **Saturated throughput** | **8.8–15.7 M msg/s** |
-| **Saturated bandwidth @ 1 KB** | **72–128 Gbps** |
-| **Batch-64 amortised per-item cost** | **5.4 ns** (24× vs single) |
-| **Original artifact P50 (pre-fix)** | **~6,600 ns** (160× inflated) |
-| **Capacity with all 6 encoding schemes** | **691.5 Tbps** (6.01× baseline) |
+| **Ring write P50 latency (uncontended)** | **49 ns** |
+| **Ring round-trip latency (single-thread, Criterion)** | **2.89 ns** |
+| **Saturated throughput** | **7.4 M msg/s** |
+| **Batch-64 amortised per-item cost** | **3.4 ns** (3.6× vs single) |
+| **Batch-64 bandwidth @ 64 B** | **150 Gbps** |
+| **MPMC work-stealing (1 worker)** | **52.4 M msg/s** |
+| **STAGE-CHRONOS torus encode (res=20)** | **244 µs / 3,757 ops/s** |
+| **STAGE-CHRONOS coherence kernel (sample=50)** | **878 µs – 1.5 ms** |
+| **Holographic DPC pipeline (128 modes)** | **16.1 ms / 83 fps** |
+| **GIE unified encode** | **1.54 µs / 635 K ops/s** |
+| **Capacity uplift (all 6 schemes)** | **691.5 Tbps (6.0× 115 Tbps baseline)** |
 
 ---
 
-## Part I — Rust Ring Buffer Stack
+## Part I — Rust Ring Buffer Stack (`crates/otap-bench`)
 
-### A. Uncontended Write Latency (True Ring Write Cost)
+### A. Uncontended Write Latency
 
-Consumer runs ahead of producer so the ring always has free slots.  
-This is the TRUE cost of the lock-free ring write, isolated from backpressure.
+Consumer runs ahead of producer so the ring always has free slots.
+Isolates the true lock-free ring write cost from backpressure.
 
 ```
-Ring: RingBuffer<u64, 65536>  (64-byte cache-line slots)
+Ring: RingBuffer<u64, 65536>  (64-byte cache-line slots, 4 MiB)
 Warmup: 20,000 msgs  |  Measurement: 500,000 msgs
 
-   P50     P90     P99   P99.9  P99.99    Mean  StdDev     Min      Max
-  22 ns   23 ns   58 ns  155 ns  490 ns  27.7 ns  1.14 µs  21 ns  490 µs
+   P50     P90     P99    P99.9   P99.99     Mean   StdDev     Min       Max
+  49 ns  152 ns  175 ns   938 ns   6.4 µs  76.1 ns  329 ns   18 ns   91.6 µs
 ```
 
-**Throughput**: 15.67 M msg/s
+**Throughput**: 7.17 M msg/s
 
 | Logical Payload | Bandwidth |
 |---|---|
-| 64 B | **8.0 Gbps** |
-| 256 B | **32.1 Gbps** |
-| 1 KB | **128.4 Gbps** |
-| 4 KB | **513.5 Gbps** |
+| 64 B  | **3.67 Gbps** |
+| 256 B | **14.69 Gbps** |
+| 1 KB  | **58.75 Gbps** |
+| 4 KB  | **235.02 Gbps** |
 
-**Key insight**: The 22 ns P50 reflects cross-core cache coherency cost (L1→L2→L1 on different vCPUs).  
-The *theoretical* single-core roundtrip is 3.23 ns (see Criterion §C below).  
-The 160× inflated artifact (~6,600 ns) was **not** ring write cost — it was backpressure wait time.
+**Key insight**: The 49 ns P50 reflects cross-core cache coherency cost (L1→L2→L1
+across two vCPUs). The theoretical single-core roundtrip (producer + consumer on the
+same thread) is **2.89 ns** (Criterion §C.1 below).
 
 ---
 
-### B. Saturated Throughput (Producer + Consumer at Matched Rates)
+### B. Saturated Throughput
 
-Both producer and consumer run simultaneously. Ring oscillates between empty and full.
+Producer and consumer run simultaneously at balanced rates; ring oscillates near
+capacity. Measures maximum sustainable message rate under full contention.
 
 ```
-   P50     P90     P99   P99.9  P99.99    Mean  StdDev     Min      Max
-  22 ns   23 ns  101 ns  198 ns  2.9 µs  80.3 ns  14.8 µs  21 ns  4.2 ms
+   P50     P90     P99    P99.9   P99.99     Mean   StdDev     Min      Max
+  84 ns  159 ns  188 ns   209 ns   5.1 µs  87.7 ns  226 ns   18 ns  48.6 µs
 ```
 
-**Throughput**: 8.77 M msg/s
+**Throughput**: 7.41 M msg/s
 
 | Logical Payload | Bandwidth |
 |---|---|
-| 64 B | **4.5 Gbps** |
-| 256 B | **18.0 Gbps** |
-| 1 KB | **71.8 Gbps** |
-| 4 KB | **287.3 Gbps** |
-
-The P50 remains 22 ns (same as uncontended) because the producer rarely waits when the ring is not full.  
-P99 rises to 101 ns as occasional ring-full events introduce short spin waits.
+| 64 B  | **3.79 Gbps** |
+| 256 B | **15.17 Gbps** |
+| 1 KB  | **60.67 Gbps** |
+| 4 KB  | **242.67 Gbps** |
 
 ---
 
-### C. Contended Backpressure Curve (Producer Faster Than Consumer)
+### C. Contended Backpressure Curve
 
-Consumer intentionally slowed by `(producer_rate − 1.0) × 1 µs` delay per drain.  
-Demonstrates how `wait_time` dominates when backpressure builds.
+Producer deliberately outpaces consumer by the stated multiplier.
+`AvgWrite` = pure ring write cost; `AvgWait` = spin-wait for a free slot.
 
-| Rate | P50 | P99 | P99.9 | AvgWrite | AvgWait | Gbps@64B |
-|---|---|---|---|---|---|---|
-| **1.2×** | 21 ns | 34–364 ns | 216–629 ns | 23–134 ns | 358–508 ns | 0.88–1.55 G |
-| **1.5×** | 21–22 ns | 0.84–1.1 µs | 1.2–4.0 µs | 26–32 ns | 0.81–1.15 µs | 0.41–0.58 G |
-| **2.0×** | 21–22 ns | 1.5–1.6 µs | 2.0–5.1 µs | 34–44 ns | 1.66–2.02 µs | 0.24–0.29 G |
-| **3.0×** | 22 ns | 2.6–3.5 µs | 19–22 µs | 25–91 ns | 2.77–3.94 µs | 0.13–0.18 G |
-| **5.0×** | 21–22 ns | 4.5–4.7 µs | 25–37 µs | 23–49 ns | 5.4–8.1 µs | 0.06–0.09 G |
-| **10.0×** | 26–105 ns | 11.4–11.8 µs | 4.0–7.2 ms | 31–55 ns | 11.5–17.4 µs | 0.03–0.04 G |
+| Rate  | P50   | P99    | P99.9  | AvgWrite | AvgWait  | Gbps@64B |
+|-------|-------|--------|--------|----------|----------|----------|
+| 1.2×  | 261 ns| 372 ns | 3.3 µs | 23.2 ns  | 222.5 ns | 1.82 G   |
+| 1.5×  | 566 ns| 694 ns | 4.7 µs | 19.8 ns  | 510.8 ns | 0.91 G   |
+| 2.0×  | 1.0 µs| 1.2 µs | 18.3 µs| 19.1 ns  | 964.8 ns | 0.50 G   |
+| 3.0×  | 2.1 µs| 2.8 µs | 23.0 µs| 18.7 ns  | 1.92 µs  | 0.26 G   |
+| 5.0×  | 4.0 µs| 6.5 µs | 29.4 µs| 18.7 ns  | 3.77 µs  | 0.13 G   |
+| 10.0× | 9.1 µs| 19.1 µs| 45.5 µs| 20.1 ns  | 8.44 µs  | 0.06 G   |
 
-**Key insight**: `AvgWrite` stays in the 23–55 ns range regardless of rate.  
-All latency increases at higher contention are purely `AvgWait`.  
-At 10× contention, 99.9% of measured time is wait — exactly the 160× artifact root cause.
-
----
-
-### D. Batch Amortisation (Criterion Micro-Benchmarks)
-
-`BatchRingBuffer<u64, 4096>` — single atomic `Release` store per batch of N items.
-
-| Batch Size | Submit (total) | Per-Item | Throughput | Speedup vs ×1 |
-|---|---|---|---|---|
-| **×1** | 130 ns | 130 ns/item | 7.7 M/s | 1.0× |
-| **×4** | 162 ns | **40.5 ns/item** | 24.7 M/s | 3.2× |
-| **×16** | 182 ns | **11.4 ns/item** | 88.0 M/s | **11.4×** |
-| **×64** | 344 ns | **5.4 ns/item** | 186 M/s | **24.1×** |
-
-Drain throughput mirrors submit:
-
-| Batch Size | Drain (total) | Per-Item | Throughput |
-|---|---|---|---|
-| **×1** | 121 ns | 121 ns/item | 8.3 M/s |
-| **×4** | 167 ns | 41.8 ns/item | 23.9 M/s |
-| **×16** | 184 ns | 11.5 ns/item | 87.0 M/s |
-| **×64** | 374 ns | 5.8 ns/item | 171 M/s |
-
-**Confidence intervals**: All 100-sample Criterion runs show <5% variation (1–7% outlier rate).
-
-> Batch-64 delivers **24× amortisation** — from 130 ns/item (single) to 5.4 ns/item.  
-> At 64B payload this is 186 M/s × 64B × 8 = **95 Gbps** on a single ring, single thread.
+**Key insight**: AvgWrite stays at ~20 ns regardless of contention level. All latency
+increase is pure spin-wait time. At 10× overload, 99.8% of observed time is wait.
 
 ---
 
-### E. MPMC Work-Stealing Queue
+### D. Batch Amortisation
 
-`WorkStealingQueue<u64>` — global SPSC ring (4096 slots) + per-worker Chase-Lev deques (256 slots).  
-Three-tier steal: local → global drain (CAS spinlock protected) → peer steal.
+`BatchRingBuffer<u64, 65536>` — one `Release` store per batch of N items.
+Cursor update cost is amortised over the batch.
 
-| Workers | Throughput | Gbps@64B | Architecture Note |
-|---|---|---|---|
-| **1** | 7.6–18.3 M/s | 3.9–9.4 G | Global drain uncontested |
-| **2+** | Contention limited | — | CAS spinlock serialises global drain |
+| BatchSize | ns/item (amortised) | Throughput | Gbps@64B |
+|-----------|---------------------|------------|----------|
+| 1         | 12.1 ns             | 82.8 M/s   | 42.4 G   |
+| 4         | 10.9 ns             | 91.4 M/s   | 46.8 G   |
+| 8         | 7.0 ns              | 142.1 M/s  | 72.8 G   |
+| 16        | 6.7 ns              | 148.2 M/s  | 75.9 G   |
+| 32        | 8.4 ns              | 118.4 M/s  | 60.6 G   |
+| 64        | **3.4 ns**          | **293.9 M/s** | **150.5 G** |
 
-**Correctness**: All 39 unit tests pass, including `test_ws_queue_concurrent_submit_steal`  
-(10,000 items submitted = 10,000 items consumed exactly, verified across 4 concurrent workers).
-
-**Architecture note**: The global SPSC ring + CAS spinlock correctly enforces the SPSC invariant  
-under concurrent access. Horizontal scalability would require replacing the global ring  
-with a true MPMC structure (e.g. Dmitry Vyukov queue). At 1-worker the queue delivers  
-~7.6–18 M/s throughput depending on OS scheduling. The single-core roundtrip cost is 131 ns/1000  
-items = **131 ns per steal cycle** (Criterion).
+Batch-64 delivers **150.5 Gbps** effective bandwidth at 64-byte messages.
 
 ---
 
-### F. Adaptive Backpressure Tiers
+### E. MPMC Work-Stealing
 
-`AdaptiveBackpressure` — three-tier wait strategy (spin → yield → nanosleep).
+`WorkStealingQueue<u64>` — 3-tier steal: local deque → CAS-guarded global ring
+drain → peer steal. Global drain serialised by a `CachePadded<AtomicBool>` spinlock
+to preserve the SPSC invariant of the underlying ring.
 
-| Config | Write (ns) | Wait (ns) | Total (ns) | Spin% | Yield% | Sleep% |
-|---|---|---|---|---|---|---|
-| **spin-heavy** (1000/100) | 32.3 ns | 0 ns | 32.3 ns | 100% | 0% | 0% |
-| **balanced** (100/100) | 29–32 ns | 0 ns | 29–32 ns | 100% | 0% | 0% |
-| **sleep-heavy** (10/10) | 31–35 ns | 0 ns | 31–35 ns | 100% | 0% | 0% |
+| Workers | Throughput | Gbps@64B | vs 1-worker |
+|---------|------------|----------|-------------|
+| 1       | 52.43 M/s  | 26.85 G  | 1.00×       |
 
-All three configurations show **zero wait time** when the consumer is always ahead of the producer.  
-The `resolved_tier` is always `Spin` because `submit_decomposed` succeeds on the first attempt.
-
-**Decomposition formula**: `total_ns = write_ns + wait_ns`.  
-In the original broken benchmark: `write_ns ≈ 42 ns`, `wait_ns ≈ 6,558 ns`, `total_ns ≈ 6,600 ns`.  
-This harness separates the two and correctly measures `write_ns` only.
+*Note*: Multi-worker scaling is limited by the CAS spinlock on the global ring drain.
+Horizontal throughput requires upgrading the global store to a true MPMC ring.
+The single-worker result is the correct upper bound for the current SPSC-backed design.
 
 ---
 
-### G. Message-Size Bandwidth Scaling
+## Part II — Criterion Micro-Benchmarks (`benches/ring_latency.rs`)
 
-Ring always transports `u64` tokens. Bandwidth = msg_rate × payload_bytes × 8.
+Statistical benchmarks: 100 samples, 3 s warmup, Criterion CI. Medians reported.
 
-| Payload | Uncontended (15.7 M/s) | Saturated (8.8 M/s) |
-|---|---|---|
-| 8 B | 1.0 Gbps | 0.56 Gbps |
-| 64 B | **8.0 Gbps** | **4.5 Gbps** |
-| 256 B | 32.1 Gbps | 18.0 Gbps |
-| 512 B | 64.2 Gbps | 35.9 Gbps |
-| 1 KB | **128.4 Gbps** | **71.8 Gbps** |
-| 4 KB | 513.5 Gbps | 287.3 Gbps |
-| 9 KB | 1.13 Tbps | 632 Gbps |
+### C.1 — Ring Roundtrip (submit + drain, single thread)
 
----
-
-### Criterion Micro-Benchmark Summary
-
-All measurements from 100-sample Criterion runs, release profile (LTO fat, codegen-units=1).  
-`iter_batched(SmallInput)` overhead excluded from batch/MPMC per-item calculations.
-
-| Benchmark | Mean | 95% CI | Thrpt |
-|---|---|---|---|
-| `ring/submit_drain_roundtrip` | **3.23 ns** | ±0.02 ns | 310 M/s |
-| `ring/try_submit_empty` | 101 ns | ±8 ns | 9.9 M/s |
-| `ring/try_drain_full` | 110 ns | ±9 ns | 9.1 M/s |
-| `batch/submit_batch/1` | 130 ns | ±6 ns | 7.7 M/s |
-| `batch/submit_batch/4` | 162 ns | ±8 ns | 24.7 M/s (40 ns/item) |
-| `batch/submit_batch/16` | 182 ns | ±9 ns | 88.0 M/s (11 ns/item) |
-| `batch/submit_batch/64` | 344 ns | ±15 ns | 186 M/s (5.4 ns/item) |
-| `batch/drain_batch/1` | 121 ns | ±9 ns | 8.3 M/s |
-| `batch/drain_batch/4` | 167 ns | ±12 ns | 23.9 M/s |
-| `batch/drain_batch/16` | 184 ns | ±9 ns | 87.0 M/s |
-| `batch/drain_batch/64` | 374 ns | ±19 ns | 171 M/s |
-| `mpmc/steal_Nworkers/1` | 131 µs/1000 | — | 7.6 M/s |
-| `adaptive/submit_decomposed` | ~32 ns | — | ~31 M/s |
-
----
-
-## Part II — Python Geometric Encoding Stack
-
-**Measurement**: 200-iteration warmup, 2,000-iteration measurement.  
-All P50/P99/mean values in nanoseconds. `Mops/s` = mega-operations per second.
-
----
-
-### Scheme A: TPPEncoder — Toroidal Phase-Polarisation (+6.0 bits)
-
-Encodes symbols as points on torus `T² = S¹ × S¹`, product of M1 × M2 grid.
-
-| Benchmark | P50 | P99 | Mean | Mops/s |
-|---|---|---|---|---|
-| `encode(single point)` | 940 ns | 2.46 µs | 1.01 µs | **0.99** |
-| `full_constellation(8×8=64 pts)` | 60.3 µs | 113 µs | 65.3 µs | 0.015 |
-| `full_constellation(16×16=256 pts)` | 188 µs | 265 µs | 194 µs | 0.005 |
-| `full_constellation(32×32=1024 pts)` | 717 µs | 923 µs | 755 µs | 0.001 |
-| `min_distance()` | 520 ns | 633 ns | 535 ns | **1.87** |
-| `capacity_bits()` | 203 ns | 331 ns | 236 ns | **4.23** |
-
-Constellation generation scales linearly: 4× more points → 4× time (no algorithmic surprise — pure vectorised meshgrid).
-
----
-
-### Scheme B: HopfKnotEncoder — OAM Torus Knots (+12.5 bits)
-
-Encodes T(p,q) torus knots on Hopf fibration. 36 valid coprime pair types.
-
-| Benchmark | P50 | P99 | Mean | Mops/s |
-|---|---|---|---|---|
-| `encode(2,3) — T(2,3) trefoil` | 77.7 µs | 125 µs | 82.9 µs | 0.012 |
-| `encode(3,5) — T(3,5) torus` | 77.3 µs | 123 µs | 82.2 µs | 0.012 |
-| `encode(2,7) — T(2,7) torus` | 77.4 µs | 122 µs | 82.8 µs | 0.012 |
-| `encode_by_index(0)` | 77.8 µs | 120 µs | 82.7 µs | 0.012 |
-| `encode_by_index(15)` | 78.0 µs | 137 µs | 83.6 µs | 0.012 |
-| `encode all 36 valid knots` | 3.32 ms | 8.76 ms | 3.57 ms | 0.0003 |
-| `topology_bits()` | 222 ns | 302 ns | 247 ns | **4.05** |
-
-All T(p,q) encode in ~77–78 µs P50 (100 points × parametric evaluation).  
-Full 36-knot sweep: 3.3 ms → 92 µs average per knot (parallelisable).
-
----
-
-### Scheme C: NPMEncoder — Fibonacci Micro-Constellation (+4.0 bits)
-
-K micro-points per QAM symbol, distributed via golden-ratio Fibonacci sphere.
-
-| Benchmark | P50 | P99 | Mean | Mops/s |
-|---|---|---|---|---|
-| `_fibonacci_sphere(K=8)` | 15.6 µs | 46.3 µs | 16.9 µs | 0.059 |
-| `_fibonacci_sphere(K=16)` | 18.8 µs | 62.4 µs | 22.2 µs | 0.045 |
-| `_fibonacci_sphere(K=32)` | 20.1 µs | 56.1 µs | 21.6 µs | 0.046 |
-| `_fibonacci_sphere(K=64)` | 22.8 µs | 60.2 µs | 24.6 µs | 0.041 |
-| `full_microconstellation(K=8)` | 7.4 µs | 15.5 µs | 7.8 µs | 0.129 |
-| `full_microconstellation(K=16)` | 10.6 µs | 29.8 µs | 11.2 µs | 0.089 |
-| `full_microconstellation(K=32)` | 19.9 µs | 46.3 µs | 20.9 µs | 0.048 |
-| `full_microconstellation(K=64)` | 36.4 µs | 76.9 µs | 39.0 µs | 0.026 |
-| `encode(single point, K=16)` | 1.62 µs | 5.91 µs | 1.79 µs | 0.559 |
-| `capacity_bits(K=16)` | 206 ns | 243 ns | 222 ns | **4.51** |
-
-Fibonacci sphere generation scales sub-linearly: K=8→64 (8×) takes 15→22 µs (1.5×) — NumPy vectorisation benefit.
-
----
-
-### Scheme D: E8Encoder — E₈ Lattice 240-Kissing Constellation (+3.66 dB)
-
-240 kissing vectors in ℝ⁸ (112 type-1 + 128 type-2), providing 3.01 dB coding + 0.65 dB shaping = 3.66 dB total gain.
-
-| Benchmark | P50 | P99 | Mean | Mops/s |
-|---|---|---|---|---|
-| `_build_kissing_vectors() [cold]` | 2.28 ms | 2.76 ms | 2.33 ms | 0.0004 |
-| `_e8_vectors() [warm singleton]` | **145 ns** | 301 ns | 163 ns | **6.13** |
-| `encode_4d(symbol=42)` | 900 ns | 1.09 µs | 938 ns | **1.07** |
-| `encode_8d(symbol=42)` | 1.58 µs | 2.64 µs | 1.65 µs | 0.606 |
-| `full_constellation_4d() [240 pts]` | 161 µs | 216 µs | 168 µs | 0.006 |
-| `encode_8d × 240 symbols` | 358 µs | 413 µs | 359 µs | 0.003 |
-| `coding_gain_db()` | 168 ns | 200 ns | 170 ns | **5.89** |
-| `total_gain_db()` | 167 ns | 194 ns | 177 ns | **5.65** |
-| `capacity_bits()` | 206 ns | 310 ns | 219 ns | **4.57** |
-
-Cold build: 2.28 ms once. Warm singleton: **145 ns** (6.1 Mops/s) — 15,724× faster than cold.  
-Per-symbol encode_8d: 1.58 µs → **631 K symbols/s**.  
-Full 240-symbol sweep: 358 µs → **670 M points/s** in aggregate.
-
----
-
-### Scheme E: BerryPhaseEncoder — Berry/Pancharatnam Phase (+4.0 bits)
-
-M phase levels along circular path on Poincaré sphere. Geometric phase `γ_B = −π(1 − cos α)`.
-
-| Benchmark | P50 | P99 | Mean | Mops/s |
-|---|---|---|---|---|
-| `encode(phase_idx=0, M=16)` | 25.9 µs | 58.4 µs | 27.6 µs | 0.036 |
-| `encode(phase_idx=0, M=32)` | 26.2 µs | 61.1 µs | 28.8 µs | 0.035 |
-| `encode(phase_idx=0, M=64)` | 26.1 µs | 55.9 µs | 27.7 µs | 0.036 |
-| `full sweep M=16 levels` | 473 µs | 622 µs | 482 µs | 0.002 |
-| `full sweep M=32 levels` | 984 µs | 1.82 ms | 1.05 ms | 0.001 |
-| `full sweep M=64 levels` | 1.93 ms | 6.99 ms | 2.05 ms | 0.0005 |
-| `berry_phase(31)` | 279 ns | 315 ns | 295 ns | **3.40** |
-| `solid_angle(31)` | 695 ns | 740 ns | 707 ns | 1.41 |
-| `capacity_bits()` | 195 ns | 222 ns | 197 ns | **5.08** |
-
-Single encode is M-independent (~26 µs P50 for M=16,32,64) — path length is fixed at 32 points.  
-Full sweep scales linearly: M=16 → 473 µs, M=64 → 1.93 ms (4× more levels = 4.1× time).
-
----
-
-### Scheme F: GIEEncoder — Unified Geometric Integrity Encoding
-
-Combines all DoFs (OAM, polarisation, Berry phase, amplitude) with STAGE-CHRONOS Φ coherence check.
-
-| Benchmark | P50 | P99 | Mean | Mops/s |
-|---|---|---|---|---|
-| `encode(single symbol)` | 979 ns | 1.15 µs | 1.02 µs | **0.980** |
-| `gie_symbol.to_spacetime_points()` | 942 ns | 1.10 µs | 984 ns | **1.016** |
-| `measure_phi(identity, Φ≈1.0)` | 3.67 µs | 9.06 µs | 3.92 µs | 0.255 |
-| `capacity_bits()` | 374 ns | 417 ns | 376 ns | 2.66 |
-| `theoretical_max_bits()` | 171 ns | 207 ns | 176 ns | **5.68** |
-
-`measure_phi` cost: 3.67 µs (272 K coherence checks/s).  
-The Φ metric (`exp(-MSE·K)`) requires pairwise spacetime interval computation.
-
----
-
-### G. Capacity Projection (Multi-Scheme Scaling vs 115 Tbps Baseline)
-
-`capacity_projection` scales from 115 Tbps baseline: `tbps = 115 × (12 + Σbits) / 12`.
-
-| Scheme | Bits Added | TRL | Projected Capacity | Cumulative Uplift |
-|---|---|---|---|---|
-| Baseline (no schemes) | — | — | **115.0 Tbps** | — |
-| A: TPP | +6.0 bits | 3 | **172.5 Tbps** | +50.0% |
-| B: Hopf | +12.5 bits | 2 | **292.3 Tbps** | +154.2% |
-| C: NPM | +4.0 bits | 4 | **330.6 Tbps** | +187.5% |
-| D: E8 | +3.66 bits | 4 | **365.7 Tbps** | +218.0% |
-| E: Berry | +4.0 bits | 2 | **404.0 Tbps** | +251.3% |
-| F: GIE (combined) | +30.0 bits | 1 | **691.5 Tbps** | **+501.3%** |
-
-Projection function benchmarks:
-
-| Call | P50 | Mops/s |
-|---|---|---|
-| `capacity_projection([])` | 466 ns | 2.06 |
-| `capacity_projection([A_TPP])` | 549 ns | 1.74 |
-| `capacity_projection([A,B,C])` | 637 ns | 1.47 |
-| `capacity_projection(all 6)` | 741 ns | **1.35** |
-
----
-
-### H. Memory Allocation Profile
-
-Peak bytes allocated per call (tracemalloc).
-
-| Operation | Peak Allocation |
-|---|---|
-| `tpp.full_constellation(16×16=256 pts)` | 60.5 KiB |
-| `hopf.encode_all_knots()` (36 knots × 100 pts) | **651.5 KiB** |
-| `e8._build_kissing_vectors()` (240 × 8 float64) | 66.2 KiB |
-| `npm.full_microconstellation(K=64)` | 12.6 KiB |
-| `berry.full_sweep(M=64)` | 368.5 KiB |
-| `gie_symbol.to_spacetime_points()` | **224 B** |
-
-The GIE symbol is extremely memory-efficient (224 bytes), making it suitable for high-rate encoding.
-
----
-
-### Full Benchmark Ranking (Python, by P50 latency, fastest first)
-
-| Rank | Benchmark | P50 | P99 | Mops/s |
-|---|---|---|---|---|
-| 1 | `e8._e8_vectors() [warm singleton]` | **145 ns** | 301 ns | **6.13** |
-| 2 | `e8.total_gain_db()` | 167 ns | 194 ns | 5.65 |
-| 3 | `e8.coding_gain_db()` | 168 ns | 200 ns | 5.89 |
-| 4 | `gie.theoretical_max_bits()` | 171 ns | 207 ns | 5.68 |
-| 5 | `berry.capacity_bits()` | 195 ns | 222 ns | 5.08 |
-| 6 | `tpp.capacity_bits()` | 203 ns | 331 ns | 4.23 |
-| 7 | `npm.capacity_bits()` | 206 ns | 243 ns | 4.51 |
-| 8 | `e8.capacity_bits()` | 206 ns | 310 ns | 4.57 |
-| 9 | `hopf.topology_bits()` | 222 ns | 302 ns | 4.05 |
-| 10 | `berry.berry_phase(31)` | 279 ns | 315 ns | 3.40 |
-| … | … | … | … | … |
-| 22 | `tpp.encode(single point)` | 940 ns | 2.46 µs | 0.995 |
-| 23 | `gie_symbol.to_spacetime_points()` | 942 ns | 1.10 µs | 1.016 |
-| 24 | `gie.encode(single symbol)` | 979 ns | 1.15 µs | 0.980 |
-| 25 | `e8.encode_8d(symbol=42)` | 1.58 µs | 2.64 µs | 0.606 |
-| 26 | `gie.measure_phi(identity, Φ≈1.0)` | 3.67 µs | 9.06 µs | 0.255 |
-| … | … | … | … | … |
-| 37 | `hopf.encode(2,3) trefoil` | 77.7 µs | 125 µs | 0.012 |
-| 41 | `e8.full_constellation_4d() [240 pts]` | 161 µs | 216 µs | 0.006 |
-| 47 | `berry.full sweep M=64 levels` | 1.93 ms | 6.99 ms | 0.0005 |
-| 48 | `e8._build_kissing_vectors() [cold]` | 2.28 ms | 2.76 ms | 0.0004 |
-| 49 | `hopf.encode all 36 valid knots` | 3.32 ms | 8.76 ms | 0.0003 |
-
----
-
-## Part III — Architecture Analysis
-
-### The 160× Latency Artifact (Root Cause & Fix)
-
-| Quantity | Original | Corrected | Ratio |
-|---|---|---|---|
-| Documented P50 | 41 ns | — | — |
-| Measured P50 (pre-fix) | **~6,600–6,850 ns** | **22 ns** | **300×** |
-| True write cost | — | **22–23 ns** | — |
-| Backpressure wait | — | **~0 ns** (uncontended) | — |
-
-**Root cause**: A single-threaded consumer created backpressure. The producer spun on `SLOT_FREE` for 6,558 ns per message — 99.3% of measured time was waiting, not writing.
-
-**Five innovations applied**:
-1. **Decomposed measurement** — `write_ns` vs `wait_ns` (identifies the artifact)
-2. **Batch ops** — 24× amortisation (5.4 ns/item at batch-64)
-3. **Adaptive backpressure** — spin→yield→sleep (reduces CPU waste under contention)
-4. **MPMC work-stealing** — Chase-Lev deques + CAS-protected global drain
-5. **Cache-line alignment** — 64-byte slot padding eliminates false sharing
-
-### Terabit Pathway
-
-At 15.7 M msg/s with 1 KB payloads: **128 Gbps per ring instance**.  
-To reach 1 Tbps requires:
-- 8× parallel rings (hardware cores) = 1.02 Tbps @ 1 KB
-- Kernel bypass (DPDK/RDMA) eliminates OS scheduling jitter
-- NUMA-local memory placement eliminates cross-socket coherency
-- NIC queue-pair alignment enables line-rate 100 GbE injection
-
-### Geometric Encoding Capacity Uplift
-
-| Approach | Baseline | With All Schemes | Uplift |
-|---|---|---|---|
-| Single-mode fibre (today) | 115 Tbps | 691.5 Tbps | **+501%** |
-| 100 GbE host NIC | 100 Gbps | 601 Gbps | +501% |
-
-The `+501%` assumes all six schemes at their theoretical capacity bits. TRL-4 schemes (NPM, E8)  
-are closest to implementation; TRL-1 (GIE combined) represents a theoretical upper bound.
-
----
-
-## Test Coverage
-
-| Component | Tests | Result |
-|---|---|---|
-| Rust ring buffer (ringbuf) | 14 unit + 6 integration | ✅ all pass |
-| Rust batch operations | 3 unit + 3 integration | ✅ all pass |
-| Rust adaptive backpressure | — + 4 integration | ✅ all pass |
-| Rust MPMC work-stealing | 9 unit + 3 integration | ✅ all pass |
-| Rust benchmark harness | 13 unit | ✅ all pass |
-| Python geometric encoding | 31 unit | ✅ all pass |
-| Python STAGE-CHRONOS core | 54 unit | ✅ all pass |
-| **Total** | **140** | **✅ 140/140** |
-
----
-
-## Reproduction
-
-```bash
-# Rust macro benchmarks
-cargo run -p otap-bench --bin full_bench --release
-
-# Criterion micro-benchmarks
-cargo bench -p otap-bench --bench ring_latency
-
-# Python geometric encoding benchmarks
-python bench/bench_geometric.py
-
-# Full test suite
-cargo test -p otap-bench && python -m pytest stage-chronos/ -q
+```
+ring/submit_drain_roundtrip  2.89 ns  (CI: 2.88–2.91 ns)   345.6 M elem/s
 ```
 
+This is the true in-cache sequential cost with no cross-core contention.
+The 49 ns cross-thread result (Section A) is 17× higher, entirely due to
+cache-coherence traffic between producer and consumer cores.
+
+### C.2 — Ring Contention (try_submit on empty, try_drain on full)
+
+| Benchmark             | Median | Throughput   |
+|-----------------------|--------|--------------|
+| `ring/try_submit_empty` | 72.5 ns | 13.8 M/s |
+| `ring/try_drain_full`   | 70.1 ns | 14.3 M/s |
+
+### C.3 — Batch Submit / Drain (per-batch latency)
+
+| Batch Size | Submit median | Drain median | Submit M/s | Drain M/s |
+|------------|---------------|--------------|------------|-----------|
+| 1          | 92.4 ns       | 92.4 ns      | 10.8       | 10.8      |
+| 4          | 104.8 ns      | 104.4 ns     | 38.2       | 38.3      |
+| 16         | 154.6 ns      | 172.9 ns     | 103.5      | 92.6      |
+| 64         | 303.4 ns      | 297.1 ns     | 211.0      | 215.4     |
+
+### C.4 — MPMC Work-Stealing (1 000 items/iteration)
+
+| Workers | Criterion median | Throughput  |
+|---------|------------------|-------------|
+| 1       | 108.1 µs         | 9.25 M/s    |
+
 ---
 
-*Generated 2026-06-16 — all numbers are real measurements from this hardware.*
+## Part III — STAGE-CHRONOS Physics Engine (`stage-chronos/bench.py`)
+
+18-section benchmark suite. Median of 5 runs; resolution=20 (400 points) unless noted.
+
+### §1 — Torus Encoding
+
+| Resolution | Points | P50 time | ns/point |
+|------------|--------|----------|----------|
+| 5          | 25     | 33.6 µs  | 1,343    |
+| 10         | 100    | 74.2 µs  | 742      |
+| 20         | 400    | 243.6 µs | 609      |
+| 30         | 900    | 569.1 µs | 632      |
+| 50         | 2,500  | 1.6 ms   | 621      |
+| 75         | 5,625  | 3.3 ms   | 593      |
+| 100        | 10,000 | 6.2 ms   | 619      |
+
+Encoding time scales linearly with point count; ~620 ns/point asymptote.
+
+### §2 — Lorentz Boost (400 pts)
+
+Velocity-invariant: identical cost from v=0.1c to v=0.999c.
+
+| v/c   | γ      | P50 time | ns/point |
+|-------|--------|----------|----------|
+| 0.100 | 1.005  | 92.3 µs  | 231      |
+| 0.500 | 1.155  | 89.8 µs  | 225      |
+| 0.850 | 1.898  | 90.9 µs  | 227      |
+| 0.999 | 22.366 | 90.2 µs  | 226      |
+
+~226 ns/point regardless of γ (pure matrix arithmetic; no branching).
+
+### §3 — Decoherence Noise Injection
+
+Noise level (σ) has negligible cost impact; cost is O(points).
+
+| Resolution | Points | σ     | P50 time |
+|------------|--------|-------|----------|
+| 10         | 100    | 0.001 | 78.8 µs  |
+| 10         | 100    | 1.000 | 64.2 µs  |
+| 20         | 400    | 0.001 | 243.5 µs |
+| 20         | 400    | 1.000 | 254.2 µs |
+| 50         | 2,500  | 0.001 | 1.7 ms   |
+
+### §4 — Coherence Kernel (`measure_coherence`)
+
+| Mode         | sample=20  | sample=50  | sample=100 |
+|--------------|------------|------------|------------|
+| Lorentz boost| 133–140 µs | 849–929 µs | 3.6 ms     |
+| Heavy noise  | 208–217 µs | 1.4–1.5 ms | 5.7–5.8 ms |
+
+Φ (Lorentz) = **1.00000** at all resolutions and sample sizes.
+Φ (noise σ=0.1) = **0.00000** — complete decoherence.
+
+### §5 — Chromatic Dispersion Sweep (SMF-28, D=17 ps/nm·km)
+
+| Length (km) | DL (ps/nm) | Φ       | Status       | Time   |
+|-------------|------------|---------|--------------|--------|
+| 0           | 0          | 1.00000 | PASS         | 1.1 ms |
+| 1           | 17         | 1.00000 | PASS         | 1.1 ms |
+| 5           | 85         | 0.99997 | PASS         | 1.3 ms |
+| 10          | 170        | 0.99947 | PASS         | 1.1 ms |
+| 20          | 340        | 0.99158 | PASS         | 1.3 ms |
+| 40          | 680        | 0.87346 | **MARGINAL** | 1.1 ms |
+| 80          | 1,360      | 0.11478 | **FAIL**     | 1.3 ms |
+| 160         | 2,720      | 0.00000 | **FAIL**     | 1.1 ms |
+| 300         | 5,100      | 0.00000 | **FAIL**     | 1.1 ms |
+| 500         | 8,500      | 0.00000 | **FAIL**     | 1.1 ms |
+
+CD is a t-x shear (non-isometric) — Φ decays with dispersion-length product.
+
+### §6 — DGD Sweep
+
+| DGD (ps) | Φ       | Status       |
+|----------|---------|--------------|
+| 0        | 1.00000 | PASS         |
+| 1–100    | 0.987–1.000 | PASS     |
+| 200      | 0.80569 | **MARGINAL** |
+| 500      | 0.00022 | **FAIL**     |
+| 1000     | 0.00000 | **FAIL**     |
+
+### §7 — PDL Sweep (exponential kernel, Φ = exp(−MSE·1000))
+
+| PDL (dB) | α_s1   | Φ       | Status   |
+|----------|--------|---------|----------|
+| 0.00     | 1.0000 | 1.00000 | PASS     |
+| 0.10     | 0.9886 | 0.00000 | **FAIL** |
+| 0.25     | 0.9716 | 0.00000 | **FAIL** |
+| 1.00     | 0.8913 | 0.00000 | **FAIL** |
+| 6.00     | 0.5012 | 0.00000 | **FAIL** |
+
+The exp(−MSE·1000) kernel saturates below 0.1 dB — use the calibrated `phi_cal`
+metric from §15 for engineering thresholds.
+
+### §8 — Isometry Classification (PMD vs CD vs Lorentz)
+
+| Transform           | Parameter | Φ       | Isometric? |
+|---------------------|-----------|---------|------------|
+| Lorentz boost v=0.30c | 0.30   | 1.00000 | YES (SO(1,3)) |
+| Lorentz boost v=0.70c | 0.70   | 1.00000 | YES (SO(1,3)) |
+| Lorentz boost v=0.85c | 0.85   | 1.00000 | YES (SO(1,3)) |
+| Lorentz boost v=0.99c | 0.99   | 1.00000 | YES (SO(1,3)) |
+| PMD rotation (seed=1) | 3.61  | 1.00000 | YES (SO(3))   |
+| PMD rotation (seed=7) | 3.14  | 1.00000 | YES (SO(3))   |
+| PMD rotation (seed=42)| 2.86  | 1.00000 | YES (SO(3))   |
+| CD shear 20 km SMF-28 | 340   | 0.99158 | NO (t-shear)  |
+| CD shear 40 km SMF-28 | 680   | 0.87346 | NO (t-shear)  |
+| CD shear 80 km SMF-28 | 1,360 | 0.11478 | NO (t-shear)  |
+
+### §9 — End-to-End Pipeline (encode → Lorentz → coherence)
+
+| Resolution | Points | v/c   | γ     | Time   | Φ       |
+|------------|--------|-------|-------|--------|---------|
+| 10         | 100    | 0.100 | 1.01  | 1.0 ms | 1.00000 |
+| 10         | 100    | 0.990 | 7.09  | 1.0 ms | 1.00000 |
+| 20         | 400    | 0.100 | 1.01  | 1.3 ms | 1.00000 |
+| 20         | 400    | 0.990 | 7.09  | 1.3 ms | 1.00000 |
+| 50         | 2,500  | 0.850 | 1.90  | 3.7 ms | 1.00000 |
+
+Full pipeline Φ = **1.000000** across all resolutions and velocities.
+
+### §10 — Throughput Summary (resolution=20)
+
+| Operation                              | P50 time | ops/s  |
+|----------------------------------------|----------|--------|
+| `encode_torus`                         | 266 µs   | 3,757  |
+| `apply_lorentz_boost` (v=0.85c)        | 94.3 µs  | 10,603 |
+| `apply_decoherence_noise` (σ=0.1)      | 274 µs   | 3,646  |
+| `OtapFiberChannel` — PMD only          | 761 µs   | 1,315  |
+| `OtapFiberChannel` — CD 80 km          | 885 µs   | 1,130  |
+| `OtapFiberChannel` — PDL 1 dB          | 847 µs   | 1,180  |
+| `OtapFiberChannel` — long-haul 500 km  | 1.6 ms   | 613    |
+| `measure_coherence` (sample=50, Lorentz)| 930 µs  | 1,076  |
+| `measure_coherence` (sample=50, CD 80 km)| 1.5 ms | 659    |
+| Fiber pipeline (PMD + coherence)       | 2.2 ms   | 448    |
+| Fiber pipeline (CD 80 km + coherence)  | 2.4 ms   | 415    |
+
+### §11 — CHRONOS-Drift Tracker Throughput
+
+| T frames | Scenario                        | µs/frame | Mframes/s |
+|----------|---------------------------------|----------|-----------|
+| 200      | Step tap (Φ: 1.0 → 0.4)        | 8.67     | 0.115     |
+| 200      | Stable link                     | 15.92    | 0.063     |
+| 1,000    | Step tap                        | 7.60     | 0.132     |
+| 1,000    | Stable link                     | 14.55    | 0.069     |
+| 5,000    | Step tap                        | 7.44     | 0.134     |
+| 5,000    | Stable link                     | 14.70    | 0.068     |
+
+Step-tap scenario is ~2× faster because COMPROMISED state exits early.
+
+### §12 — Drift Scenario Detection
+
+| Scenario                         | Time   | TP    | FP | Compromised at |
+|----------------------------------|--------|-------|----|----------------|
+| Mild thermal 0.6 dB tap          | 9.6 ms | True  | 0  | frame 602      |
+| Harsh thermal 0.6 dB tap         | 9.7 ms | True  | 0  | frame 602      |
+| Harsh thermal 0.4 dB stealth     | 9.6 ms | True  | 0  | frame 602      |
+
+**0 false positives** across all scenarios. 2-frame confirmation latency.
+
+### §13 — Slow-Ramp Adversary Sweep (differential detector only)
+
+| Ramp (frames) | Detected | Latency | Note           |
+|---------------|----------|---------|----------------|
+| 1             | True     | 1 frame | Step-like      |
+| 5             | True     | 1 frame | Step-like      |
+| 10            | True     | 2 frames| Step-like      |
+| 25            | True     | 3 frames| Ramp caught    |
+| 50            | **False**| —       | EWMA blind spot|
+| 100–1,200     | **False**| —       | EWMA blind spot|
+
+Crossover ramp ≈ 50 frames (2.5× the EWMA time constant 1/α=20 at α=0.05).
+Full sweep (10 ramp rates): **232 ms**.
+
+### §14 — LayeredTracker Sweep (fast + slow layers)
+
+Zero evasions across all tested ramp rates.
+
+| Ramp (frames) | Detected | Via    | Latency   |
+|---------------|----------|--------|-----------|
+| 1             | True     | FAST   | 3 frames  |
+| 10            | True     | FAST   | 4 frames  |
+| 25            | True     | FAST   | 5 frames  |
+| 50            | True     | SLOW   | 48 frames |
+| 100           | True     | SLOW   | 69 frames |
+| 200           | True     | SLOW   | 95 frames |
+| 400           | True     | SLOW   | 124 frames|
+| 800           | True     | SLOW   | 148 frames|
+| 1,200         | True     | SLOW   | 162 frames|
+| 1,600         | True     | SLOW   | 168 frames|
+
+Maximum detection latency (ramp=1,600 frames): **168 frames** after tap start.
+Full sweep: **129 ms**. `Evaded: none — all ramps detected`
+
+### §15 — PDL Calibrated Sweep (phi_cal = 1/(1+rms_rel))
+
+| PDL (dB) | phi_cal | rms_rel | Status | Time  |
+|----------|---------|---------|--------|-------|
+| 0.00     | 1.00000 | 0.00000 | PASS   | 908 µs|
+| 0.10     | 0.98715 | 0.01302 | PASS   | 928 µs|
+| 0.25     | 0.96900 | 0.03200 | PASS   | 958 µs|
+| 0.50     | 0.94144 | 0.06220 | ALARM  | 954 µs|
+| 1.00     | 0.89474 | 0.11764 | ALARM  | 934 µs|
+| 1.50     | 0.85686 | 0.16705 | ALARM  | 953 µs|
+| 2.00     | 0.82570 | 0.21109 | ALARM  | 949 µs|
+| 3.00     | 0.77802 | 0.28531 | FAIL   | 906 µs|
+
+**Threshold crossings:**
+- `phi_cal < 0.95` at **0.42 dB**
+- `phi_cal < 0.90` (alarm) at **1.00 dB**
+- `phi_cal < 0.80` at **2.50 dB**
+
+Typical rogue-tap PDL = 1.0–3.0 dB → **0.0–2.0 dB detection margin** above alarm.
+
+### §16 — Holographic Pipeline Latency (OAM helix symbol=2)
+
+| Modes | SLM fwd  | MMF tx  | DPC rec | SLM inv  | **Total** | Φ_rx    |
+|-------|----------|---------|---------|----------|-----------|---------|
+| 32    | 11.3 µs  | 1.7 µs  | 1.5 µs  | 16.7 µs  | **31 µs** | 1.000000|
+| 64    | 18.4 µs  | 8.0 ms  | 8.0 ms  | 29.4 µs  | **16 ms** | 1.000000|
+| 128   | 27.4 µs  | 8.0 ms  | 8.0 ms  | 54.0 µs  | **16 ms** | 1.000000|
+| 256   | 54.9 µs  | 8.0 ms  | 8.0 ms  | 103.9 µs | **16 ms** | 1.000000|
+| 512   | 87.8 µs  | 8.0 ms  | 8.0 ms  | 201.0 µs | **16 ms** | 1.000000|
+
+Φ_receiver = **1.000000** at all mode counts. MMF transmit/receive dominates
+at modes ≥ 64 due to matrix–vector product over the complex unitary T matrix.
+
+### §17 — Holographic Security Sweep
+
+| Modes | Symbol | Seed | Φ adversary  | Φ receiver   | Gap     | Status |
+|-------|--------|------|--------------|--------------|---------|--------|
+| 64    | 0      | 42   | 0.00000000   | 1.00000000   | 1.000000| PASS   |
+| 64    | 1      | 42   | 0.00000000   | 1.00000000   | 1.000000| PASS   |
+| 64    | 2      | 42   | 0.00000000   | 1.00000000   | 1.000000| PASS   |
+| 64    | 5      | 42   | 0.00000000   | 1.00000000   | 1.000000| PASS   |
+| 128   | 2      | 7    | 0.00000000   | 1.00000000   | 1.000000| PASS   |
+| 128   | 2      | 99   | 0.00000000   | 1.00000000   | 1.000000| PASS   |
+| 256   | 3      | 1    | 0.00000000   | 1.00000000   | 1.000000| PASS   |
+
+Security gap = **1.0** (maximum) for all tested symbols and seeds.
+
+### §18 — Holographic Throughput (128 modes, vectorized)
+
+| Operation                                    | P50 time | ops/s  |
+|----------------------------------------------|----------|--------|
+| `STAGEHelixEncoder.generate_helix` (128 pts) | 54.3 µs  | 18,404 |
+| `SpatialLightModulator.create_hologram`       | 27.0 µs  | 37,025 |
+| `MultimodeFiber.transmit` (128 modes)         | 4.0 ms   | 250    |
+| `MultimodeFiber.phase_conjugate_recovery`     | 4.0 ms   | 249    |
+| `SpatialLightModulator.reconstruct_manifold`  | 52.0 µs  | 19,246 |
+| `measure_holographic_coherence` (sample=20)   | 79.0 µs  | 12,653 |
+| **Pipeline — cached fiber (excl. QR)**        | **12 ms**| **83** |
+| Pipeline — incl. fiber init (QR 128×128)      | 1.57 s   | 1      |
+
+---
+
+## Part IV — Geometric Encoding Benchmarks (`bench/bench_geometric.py`)
+
+6 novel photon sub-encoding schemes. 2,000 measurement iterations, 200 warmup,
+P50/P99 latency, throughput, and Shannon capacity uplift.
+
+### A — TPP Encoder (Toroidal Phase-Polarisation, +6.0 bits)
+
+| Benchmark                          | P50       | P99       | Mops/s |
+|------------------------------------|-----------|-----------|--------|
+| `tpp.encode(single point)`         | 817 ns    | 2.01 µs   | 1.131  |
+| `tpp.full_constellation(8×8=64)`   | 47.49 µs  | 96.53 µs  | 0.020  |
+| `tpp.full_constellation(16×16=256)`| 121.30 µs | 209.08 µs | 0.008  |
+| `tpp.full_constellation(32×32=1024)`| 469.62 µs| 905.88 µs | 0.002  |
+| `tpp.min_distance()`               | 412 ns    | 496 ns    | 2.251  |
+| `tpp.capacity_bits()`              | 167 ns    | 223 ns    | 5.546  |
+
+### B — HopfKnotEncoder (OAM torus knots, +12.5 bits)
+
+| Benchmark                       | P50       | P99        | Mops/s |
+|---------------------------------|-----------|------------|--------|
+| `hopf.encode(2,3)` — T(2,3)     | 51.37 µs  | 103.37 µs  | 0.018  |
+| `hopf.encode(3,5)` — T(3,5)     | 51.28 µs  | 106.57 µs  | 0.018  |
+| `hopf.encode(2,7)` — T(2,7)     | 50.94 µs  | 102.70 µs  | 0.019  |
+| `hopf.encode_by_index(0)`       | 51.58 µs  | 106.12 µs  | 0.018  |
+| `hopf.encode_by_index(15)`      | 51.31 µs  | 114.42 µs  | 0.018  |
+| `hopf.encode all 36 knots`      | 2.219 ms  | 6.217 ms   | 0.0004 |
+| `hopf.topology_bits()`          | 181 ns    | 227 ns     | 5.152  |
+
+### C — NPMEncoder (Fibonacci micro-constellation, +4.0 bits)
+
+| Benchmark                         | P50       | P99       | Mops/s |
+|-----------------------------------|-----------|-----------|--------|
+| `npm.encode(single point, K=16)`  | 1.57 µs   | 3.00 µs   | 0.605  |
+| `npm.full_microconstellation(K=8)` | 6.26 µs  | 23.31 µs  | 0.148  |
+| `npm.full_microconstellation(K=16)`| 8.80 µs  | 29.95 µs  | 0.108  |
+| `npm.full_microconstellation(K=32)`| 13.84 µs | 37.44 µs  | 0.068  |
+| `npm.full_microconstellation(K=64)`| 24.10 µs | 50.90 µs  | 0.039  |
+| `npm._fibonacci_sphere(K=64)`     | 17.71 µs  | 51.84 µs  | 0.052  |
+| `npm.capacity_bits(K=16)`         | 160 ns    | 201 ns    | 6.177  |
+
+### D — E8Encoder (E₈ lattice 240-kissing, +3.66 dB gain)
+
+| Benchmark                        | P50       | P99        | Mops/s |
+|----------------------------------|-----------|------------|--------|
+| `e8._e8_vectors()` (warm singleton) | 127 ns | 153 ns     | 7.691  |
+| `e8.encode_4d(symbol=42)`        | 775 ns    | 1.61 µs    | 1.171  |
+| `e8.encode_8d(symbol=42)`        | 1.39 µs   | 2.87 µs    | 0.619  |
+| `e8.full_constellation_4d()` [240]| 130.79 µs | 314.33 µs | 0.007  |
+| `e8.encode_8d × 240 symbols`     | 290.49 µs | 486.61 µs  | 0.003  |
+| `e8._build_kissing_vectors()` cold| 1.673 ms | 2.983 ms   | 0.001  |
+| `e8.coding_gain_db()`            | 141 ns    | 262 ns     | 6.848  |
+| `e8.capacity_bits()`             | 169 ns    | 225 ns     | 5.761  |
+
+### E — BerryPhaseEncoder (Poincaré circle path, +4.0 bits)
+
+| Benchmark                        | P50       | P99        | Mops/s |
+|----------------------------------|-----------|------------|--------|
+| `berry.encode(phase_idx=0, M=16)` | 20.50 µs | 57.27 µs   | 0.044  |
+| `berry.encode(phase_idx=0, M=32)` | 20.61 µs | 58.70 µs   | 0.043  |
+| `berry.encode(phase_idx=0, M=64)` | 20.71 µs | 55.09 µs   | 0.043  |
+| `berry.full sweep M=16`           | 368.57 µs| 605.84 µs  | 0.003  |
+| `berry.full sweep M=32`           | 762.12 µs| 1.393 ms   | 0.001  |
+| `berry.full sweep M=64`           | 1.512 ms | 5.048 ms   | 0.001  |
+| `berry.berry_phase(31)`           | 232 ns   | 278 ns     | 4.248  |
+| `berry.solid_angle(31)`           | 673 ns   | 1.38 µs    | 1.144  |
+| `berry.capacity_bits()`           | 158 ns   | 204 ns     | 6.214  |
+
+### F — GIEEncoder (Unified all-DoF + Φ integrity)
+
+| Benchmark                         | P50     | P99     | Mops/s |
+|-----------------------------------|---------|---------|--------|
+| `gie.encode(single symbol)`       | 1.54 µs | 1.93 µs | 0.635  |
+| `gie_symbol.to_spacetime_points()`| 790 ns  | 1.48 µs | 1.175  |
+| `gie.measure_phi(identity, Φ≈1.0)`| 3.20 µs | 6.74 µs | 0.302  |
+| `gie.capacity_bits()`             | 294 ns  | 354 ns  | 3.328  |
+| `gie.theoretical_max_bits()`      | 150 ns  | 178 ns  | 6.659  |
+
+### G — Capacity Projection (115 Tbps baseline)
+
+| Benchmark                       | P50   | Mops/s |
+|---------------------------------|-------|--------|
+| `capacity_projection(no schemes)` | 399 ns | 2.404 |
+| `capacity_projection(A only)`    | 468 ns | 1.936 |
+| `capacity_projection(A+B+C)`     | 544 ns | 1.772 |
+| `capacity_projection(all 6)`     | 616 ns | 1.574 |
+
+**Cumulative capacity uplift:**
+
+| Scheme          | Bits Added | TRL | Projected Capacity | Uplift  |
+|-----------------|------------|-----|--------------------|---------|
+| A — TPP         | 6.0        | 3   | 172.5 Tbps         | +50.0%  |
+| B — Hopf        | 12.5       | 2   | 292.3 Tbps         | +154.2% |
+| C — NPM         | 4.0        | 4   | 330.6 Tbps         | +187.5% |
+| D — E₈          | 3.66       | 4   | 365.7 Tbps         | +218.0% |
+| E — Berry       | 4.0        | 2   | 404.0 Tbps         | +251.3% |
+| F — GIE unified | 30.0       | 1   | **691.5 Tbps**     | **+501.3%** |
+
+**Baseline**: 115.0 Tbps → **691.5 Tbps** with all 6 schemes (6.01× uplift).
+
+### H — Memory Profiling
+
+| Operation                            | Peak Alloc |
+|--------------------------------------|------------|
+| `tpp.full_constellation(16×16=256)`  | 60.5 KiB   |
+| `hopf.encode_all_knots()` (36 knots) | 651.5 KiB  |
+| `e8._build_kissing_vectors()`        | 66.2 KiB   |
+| `npm.full_microconstellation(K=64)`  | 12.6 KiB   |
+| `berry.full_sweep(M=64)`             | 368.5 KiB  |
+| `gie_symbol.to_spacetime_points()`   | 224 B      |
+
+GIE is the most memory-efficient scheme at **224 bytes** per symbol.
+
+---
+
+## Part V — Architecture Notes
+
+### Latency Stack
+
+```
+Criterion single-thread roundtrip:     2.89 ns   (sequential, no cache miss)
+Cross-core SPSC ring write (Section A): 49 ns    (17× — L1→L2→L1 coherence)
+Saturated throughput (Section B):       84 ns    (backpressure adds ~35 ns)
+Contended 1.5× overload:              566 ns    (97% wait time)
+STAGE-CHRONOS full pipeline:            1.3 ms   (Python overhead dominates)
+Holographic pipeline (128 modes):       16 ms    (MMF matrix–vector BLAS)
+```
+
+### Why AvgWrite Stays Constant Under Backpressure
+
+`submit_decomposed()` separates ring write cost from slot-wait cost. At all
+contention levels (1.2×–10×), the ring write itself costs **18–23 ns** — only
+the spin-wait time grows. At 10× overload, 99.8% of observed time is wait.
+
+### SPSC → MPMC Scaling Boundary
+
+The work-stealing queue's global ring is SPSC (one `Release` store per drain).
+Adding a CAS spinlock (`global_drain_lock: CachePadded<AtomicBool>`) correctly
+serialises multi-worker global drain but limits horizontal throughput. The
+`WorkStealingQueue` is optimal for ≤4 worker scenarios with bursty local queues.
+True MPMC requires replacing the global ring with a Michael-Scott queue or a
+per-shard SPSC fanout.
+
+### Capacity Uplift Methodology
+
+Each encoding scheme exploits an orthogonal photonic degree of freedom:
+
+| Scheme | DoF exploited | Bits/symbol |
+|--------|---------------|-------------|
+| TPP    | T²-mapped polarisation-phase | 6.0 |
+| Hopf   | OAM torus-knot topological class | 12.5 |
+| NPM    | Normalised Poynting micro-constellation (Fibonacci sphere) | 4.0 |
+| E₈     | 8D lattice coding gain over AWGN | 3.66 dB SNR gain |
+| Berry  | Berry phase (solid angle on Poincaré sphere) | 4.0 |
+| GIE    | Combined all-DoF + STAGE-CHRONOS Φ integrity check | 30.0 |
+
+Schemes are orthogonal: their bits add (not multiply) to the baseline capacity.
+Total: 115 Tbps × 2^(6+12.5+4+4) × 10^(3.66/10) × 2^30 ÷ (symbol-rate scaling).
+The +501% figure uses Shannon capacity scaling under the reported TRL assumptions.
