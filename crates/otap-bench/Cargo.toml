@@ -11,6 +11,15 @@ crossbeam-utils = "0.8"
 libc = "0.2"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bin]]
+name = "full_bench"
+path = "src/bin/full_bench.rs"
+
+[[bench]]
+name = "ring_latency"
+harness = false
 
 [profile.release]
 opt-level = 3
