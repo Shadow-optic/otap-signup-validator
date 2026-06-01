@@ -10,7 +10,6 @@ package bitweave
 import (
 	"fmt"
 	"math/bits"
-	"time"
 )
 
 const MaxLeases = 1024
@@ -219,33 +218,6 @@ func (idx *LeaseIndex) CheckConflicts(channelNum uint32, awgID, tenantID, awgPor
 		}
 	}
 	return results
-}
-
-type BenchmarkReport struct {
-	LeaseCount     int
-	QueriesRun     int
-	TotalTime      time.Duration
-	AvgQueryNs     float64
-	ConflictsFound int
-}
-
-func RunBenchmark(n, q int) BenchmarkReport {
-	idx := NewLeaseIndex()
-	for i := 0; i < n && i < MaxLeases; i++ {
-		idx.Insert(fmt.Sprintf("lease-%06d", i), uint32(i%176), uint16(i/176), uint16(i%10), uint16(i%176), true)
-	}
-	totalConflicts := 0
-	start := time.Now()
-	for i := 0; i < q; i++ {
-		ch := uint32(i % 176)
-		awg := uint16((i / 176) % 8)
-		tenant := uint16((i + 3) % 10)
-		port := uint16(ch)
-		conflicts := idx.CheckConflicts(ch, awg, tenant, port, true, -1)
-		totalConflicts += len(conflicts)
-	}
-	elapsed := time.Since(start)
-	return BenchmarkReport{LeaseCount: n, QueriesRun: q, TotalTime: elapsed, AvgQueryNs: float64(elapsed.Nanoseconds()) / float64(q), ConflictsFound: totalConflicts}
 }
 
 // LensSnapshot represents a human-readable, reverse-transposed lease.
