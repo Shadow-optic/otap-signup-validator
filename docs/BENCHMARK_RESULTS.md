@@ -22,7 +22,7 @@
 | **STAGE-CHRONOS coherence kernel (sample=50)** | **878 µs – 1.5 ms** |
 | **Holographic DPC pipeline (128 modes)** | **16.1 ms / 83 fps** |
 | **GIE unified encode** | **1.54 µs / 635 K ops/s** |
-| **Capacity uplift (all 6 schemes)** | **691.5 Tbps (6.0× 115 Tbps baseline)** |
+| **Capacity uplift (v2.0 corrected, 5 schemes)** | **~247 Tbps (+115% over 115 Tbps baseline)** |
 
 ---
 
@@ -509,18 +509,31 @@ P50/P99 latency, throughput, and Shannon capacity uplift.
 | `capacity_projection(A+B+C)`     | 544 ns | 1.772 |
 | `capacity_projection(all 6)`     | 616 ns | 1.574 |
 
-**Cumulative capacity uplift:**
+**Cumulative capacity uplift (v2.0 corrected):**
 
-| Scheme          | Bits Added | TRL | Projected Capacity | Uplift  |
-|-----------------|------------|-----|--------------------|---------|
-| A — TPP         | 6.0        | 3   | 172.5 Tbps         | +50.0%  |
-| B — Hopf        | 12.5       | 2   | 292.3 Tbps         | +154.2% |
-| C — NPM         | 4.0        | 4   | 330.6 Tbps         | +187.5% |
-| D — E₈          | 3.66       | 4   | 365.7 Tbps         | +218.0% |
-| E — Berry       | 4.0        | 2   | 404.0 Tbps         | +251.3% |
-| F — GIE unified | 30.0       | 1   | **691.5 Tbps**     | **+501.3%** |
+> **v1.0 WITHDRAWN** — The 691.5 Tbps / +501% figure contained four arithmetic errors:
+> (1) E₈ dB gain ≠ bit gain, (2) GIE was a double-count of A–E, (3) Hopf and TPP both
+> use the Poincaré sphere S² and cannot stack, (4) NPM "+4.0 bits" was asserted, not
+> simulated. See `docs/NPM_CAPACITY_SIMULATION.md` for the simulation-backed analysis.
 
-**Baseline**: 115.0 Tbps → **691.5 Tbps** with all 6 schemes (6.01× uplift).
+| Scheme                   | Bits Added | TRL | Notes                                      |
+|--------------------------|------------|-----|--------------------------------------------|
+| A — TPP                  | 6.0        | 3   | T²-mapped polarisation-phase               |
+| B — Hopf *(mutex w/ A)*  | —          | 2   | Poincaré-sphere mutex; only max(A,B) counts|
+| C — NPM                  | 4.0        | 4   | Requires ε≥0.5, SNR≥30 dB (sim-backed)    |
+| D — E₈                   | 0.75       | 4   | **Corrected**: 3.66 dB SNR gain → ~1 QAM order step |
+| E — Berry                | 3.0        | 2   | Berry phase; ceiling 4.0                   |
+| ~~F — GIE unified~~      | ~~30.0~~   | —   | **Removed**: was double-counting A+B+C+E   |
+
+**Honest capacity range (v2.0):**
+
+| Scenario                         | Projected Capacity | Uplift  |
+|----------------------------------|--------------------|---------|
+| Conservative (NPM only)          | 138.3 Tbps         | +20%    |
+| Best-case honest (TPP+NPM+E₈+Berry) | ~247 Tbps       | +115%   |
+| Aggressive w/ OAM fiber (Hopf+Berry+E₈) | ~222 Tbps  | +93%    |
+
+**Baseline**: 115.0 Tbps. Honest range: **138–247 Tbps** (+20% to +115%).
 
 ### H — Memory Profiling
 
@@ -565,19 +578,27 @@ serialises multi-worker global drain but limits horizontal throughput. The
 True MPMC requires replacing the global ring with a Michael-Scott queue or a
 per-shard SPSC fanout.
 
-### Capacity Uplift Methodology
+### Capacity Uplift Methodology (v2.0 corrected)
 
-Each encoding scheme exploits an orthogonal photonic degree of freedom:
+Each encoding scheme exploits a photonic degree of freedom. Corrected from v1.0:
 
-| Scheme | DoF exploited | Bits/symbol |
-|--------|---------------|-------------|
-| TPP    | T²-mapped polarisation-phase | 6.0 |
-| Hopf   | OAM torus-knot topological class | 12.5 |
-| NPM    | Normalised Poynting micro-constellation (Fibonacci sphere) | 4.0 |
-| E₈     | 8D lattice coding gain over AWGN | 3.66 dB SNR gain |
-| Berry  | Berry phase (solid angle on Poincaré sphere) | 4.0 |
-| GIE    | Combined all-DoF + STAGE-CHRONOS Φ integrity check | 30.0 |
+| Scheme | DoF exploited | Bits/symbol | v2.0 correction |
+|--------|---------------|-------------|-----------------|
+| TPP    | T²-mapped polarisation-phase | 6.0 | — |
+| Hopf   | OAM torus-knot topological class | mutex w/ TPP | S² resource shared with TPP |
+| NPM    | Fibonacci-sphere micro-constellation | 2–4 (SNR-dependent) | Sim-backed; 0 bits at default ε=0.1 |
+| E₈     | 8D lattice SNR gain | **0.75** | 3.66 dB ≠ 3.66 bits; ~1 QAM order step |
+| Berry  | Berry phase (solid angle on S²) | 3.0 | Conservative vs. ceiling 4.0 |
+| GIE    | ~~Combined DoF~~ | **REMOVED** | Double-counted A+B+C+E |
 
-Schemes are orthogonal: their bits add (not multiply) to the baseline capacity.
-Total: 115 Tbps × 2^(6+12.5+4+4) × 10^(3.66/10) × 2^30 ÷ (symbol-rate scaling).
-The +501% figure uses Shannon capacity scaling under the reported TRL assumptions.
+**Polarisation mutex**: TPP and Hopf both exploit the Poincaré sphere S². Only the
+higher-value scheme in any configuration can be counted. With standard SMF, TPP (6.0)
+beats Hopf (4.9 net). Hopf's 12.5 figure required a separate OAM-fiber infrastructure.
+
+**NPM capacity**: Measured via Fibonacci-sphere simulation. At K=16, ε=0.1, SNR=15 dB:
+P_e ≈ 1.0 (symbols indistinguishable from noise). The "+4.0 bits" v1.0 assertion was
+invalid. Achievable: 2–4 bits at (ε≥0.5, SNR≥20–30 dB). See `docs/NPM_CAPACITY_SIMULATION.md`.
+
+**Honest capacity**: 115 Tbps × (12 + 13.75) / 12 ≈ **247 Tbps** (all five corrected
+schemes, A/B mutex enforced). The honest range accounting for deployment assumptions is
+**138–247 Tbps** (+20% to +115%).

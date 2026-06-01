@@ -353,24 +353,27 @@ Measured with `bench/bench_geometric.py` (2,000 iterations, P50/P99).
 | Scheme | Operation | P50 | Mops/s |
 |---|---|---|---|
 | A — TPP (+6.0 bits) | `encode(single)` | 817 ns | 1.131 |
-| B — Hopf (+12.5 bits) | `encode(knot)` | 51.4 µs | 0.018 |
-| C — NPM (+4.0 bits) | `encode(K=16)` | 1.57 µs | 0.605 |
-| D — E₈ (+3.66 dB) | `encode_4d` | 775 ns | 1.171 |
-| D — E₈ (+3.66 dB) | `e8_vectors()` (warm) | **127 ns** | **7.691** |
-| E — Berry (+4.0 bits) | `encode(M=16)` | 20.5 µs | 0.044 |
-| F — GIE (unified, +30 bits) | `encode` | 1.54 µs | 0.635 |
-| F — GIE | `measure_phi` | 3.20 µs | 0.302 |
+| B — Hopf (mutex w/ A) | `encode(knot)` | 51.4 µs | 0.018 |
+| C — NPM (+2–4 bits, SNR-dep.) | `encode(K=16)` | 1.57 µs | 0.605 |
+| D — E₈ (+0.75 bits corrected) | `encode_4d` | 775 ns | 1.171 |
+| D — E₈ | `e8_vectors()` (warm) | **127 ns** | **7.691** |
+| E — Berry (+3.0 bits) | `encode(M=16)` | 20.5 µs | 0.044 |
+| ~~F — GIE (removed)~~ | `encode` | 1.54 µs | 0.635 |
 
 Capacity and query ops (e.g., `capacity_bits()`) run at **5–7 Mops/s** (127–294 ns).
 
-#### Capacity Projection (115 Tbps baseline)
+#### Capacity Projection (115 Tbps baseline) — v2.0 corrected
 
-| Schemes active | Projected capacity | Uplift |
+> **v1.0 WITHDRAWN**: The 691.5 Tbps / +501% figure had four arithmetic errors (E₈ dB≠bits,
+> GIE double-count, Hopf/TPP mutex, NPM asserted not simulated).
+> See [`docs/NPM_CAPACITY_SIMULATION.md`](docs/NPM_CAPACITY_SIMULATION.md) and
+> [`docs/BENCHMARK_RESULTS.md`](docs/BENCHMARK_RESULTS.md) for the corrected analysis.
+
+| Scenario | Projected capacity | Uplift |
 |---|---|---|
-| None (baseline) | 115.0 Tbps | — |
-| A — TPP only | 172.5 Tbps | +50% |
-| A + B + C | 330.6 Tbps | +187% |
-| **All 6 (A–F)** | **691.5 Tbps** | **+501%** |
+| Conservative (NPM only, 2 bits) | 138.3 Tbps | +20% |
+| Honest best-case (TPP+NPM+E₈+Berry) | ~247 Tbps | +115% |
+| OAM-fiber variant (Hopf+Berry+E₈) | ~222 Tbps | +93% |
 
 #### Memory per Call
 

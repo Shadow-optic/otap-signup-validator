@@ -877,9 +877,15 @@ def test_capacity_projection_npm():
 
 
 def test_capacity_projection_all_schemes():
+    # v2.0 corrected arithmetic:
+    #   A/B polarisation mutex → only A_TPP(6.0) counts, B_Hopf dropped
+    #   D_E8 = 0.75 bits (dB gain ≠ bit gain; one QAM order step)
+    #   F_GIE removed (was double-counting A+B+C+E)
+    #   A_TPP(6.0) + C_NPM(4.0) + D_E8(0.75) + E_Berry(3.0) = 13.75 added bits
+    #   → (12 + 13.75) / 12 × 115 ≈ 246.8 Tbps
     all_schemes = ['A_TPP', 'B_Hopf', 'C_NPM', 'D_E8', 'E_Berry']
     proj = capacity_projection(all_schemes)
-    assert proj > 400.0, f"All schemes should exceed 400 Tbps, got {proj:.1f}"
+    assert 200.0 < proj < 290.0, f"Corrected capacity should be ~247 Tbps, got {proj:.1f}"
 
 
 # ---------------------------------------------------------------------------
