@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-000000?logo=rust)](Cargo.toml)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python)](stage-chronos/)
 [![Tests: Go](https://img.shields.io/badge/Go%20tests-220%20passing-brightgreen)](#test-results)
-[![Tests: Python](https://img.shields.io/badge/Python%20tests-85%20passing-brightgreen)](#test-results)
+[![Tests: Python](https://img.shields.io/badge/Python%20tests-120%20passing-brightgreen)](#test-results)
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-18%20sections%20documented-blue)](#performance-benchmarks)
 
 > **A full-stack photonic networking platform combining a Rust wire-format codec, a cryptographically-federated wavelength registry in Go, and a geometric-integrity physics engine in Python — bridging protocol silicon, distributed registry operations, and optical fiber channel security research.**
@@ -228,6 +228,8 @@ STAGE-CHRONOS is a geometric integrity engine for optical fiber security. It enc
 | `layered.py` | `LayeredTracker` | Two-layer detector: fast z-score (steps/fast ramps) + slow ratchet (net baseline displacement); closes the EWMA blind spot |
 | `pdl_sweep.py` | `measure_normalized_deviation`, `run_pdl_sweep` | Calibrated metric phi\_cal = 1/(1+rms\_rel); monotonic over 0–3 dB PDL range |
 | `holographic.py` | `STAGEHelixEncoder`, `SpatialLightModulator`, `MultimodeFiber` | OAM helix manifold encoder, SLM hologram mapper, Haar-random unitary MMF transmission matrix with Digital Phase Conjugation (DPC) recovery |
+| `qtx_package.py` | `CoherentState`, `SqueezedState`, `SqueezedPAMConstellation`, `PSAChannel`, `CorkscrewConstellation` | **QTX** quantum-enhanced transmitter simulation: squeezed-state PAM encoding, phase-sensitive amplification (PSA), OAM corkscrew constellation, Holevo bound analysis; honest 1.2–1.5× rate gain vs coherent |
+| `npm_capacity_sim.py` | `simulate_npm`, `run_grid`, `print_report` | **NPM** Fibonacci-sphere simulation: min-distance at stated SNR, union-bound P_e, K_usable, Shannon bound; replaces v1.0 "+4.0 bits" assertion |
 
 #### Fiber channel security classification
 
@@ -596,7 +598,8 @@ Security gap = **1.0** (Φ_receiver − Φ_adversary) for all 7 tested mode/symb
 | `MultimodeFiber` unitarity + DPC | 3 | PASS |
 | Holographic pipeline end-to-end | 5 | PASS |
 | Geometric encoding (TPP, Hopf, NPM, E₈, Berry, GIE) | 31 | PASS |
-| **Total** | **85 / 85** | **ALL PASS** |
+| QTX quantum transmitter (squeezed states, PAM, PSA, Corkscrew) | 35 | PASS |
+| **Total** | **120 / 120** | **ALL PASS** |
 
 ### Rust — `otap-bench`
 
@@ -607,6 +610,21 @@ Security gap = **1.0** (Φ_receiver − Φ_adversary) for all 7 tested mode/symb
 | AdaptiveBackpressure (3-tier wait) | 6 | PASS |
 | WorkStealingQueue (MPMC + CAS spinlock) | 10 | PASS |
 | **Total** | **39 / 39** | **ALL PASS** |
+
+---
+
+## Architecture Research Documents
+
+| Document | Description |
+|---|---|
+| [`docs/OTAP_Full_Photon_Hilbert_Space.md`](docs/OTAP_Full_Photon_Hilbert_Space.md) | Complete Hilbert-space analysis: what we use vs what's available per photon; honest 138–247 Tbps range; Holevo bound tables; engineering vs physics-limited headroom |
+| [`docs/OTAP_QTX_Quantum_Transmitter.md`](docs/OTAP_QTX_Quantum_Transmitter.md) | QTX framework: squeezed-state encoding, PSA amplification, honest 1.2–1.5× rate improvement; path to hardware |
+| [`docs/OTAP_NeXt_Architecture.md`](docs/OTAP_NeXt_Architecture.md) | NeXt three-layer quantum comm: Bessel modes (turbulence) + Cat qubits (photon loss) + Geometric phase (phase noise); simulated 10–93× BER improvement |
+| [`docs/OTAP_SiSE_Silicon_Substrate_Encoding.md`](docs/OTAP_SiSE_Silicon_Substrate_Encoding.md) | SiSE sublogic encoding: thermal/timing/power/trap/EM channels, GHOST instruction, charge-trap persistence ≥2 years |
+| [`docs/NPM_CAPACITY_SIMULATION.md`](docs/NPM_CAPACITY_SIMULATION.md) | NPM simulation: proves "+4.0 bits" v1.0 claim invalid (P_e≈1 at default params); achievable 2–4 bits with ε≥0.5, SNR 20–30 dB |
+| [`docs/BENCHMARK_RESULTS.md`](docs/BENCHMARK_RESULTS.md) | Full benchmark results: Rust ring buffer latency, Python STAGE-CHRONOS, corrected capacity analysis |
+| [`docs/OTAP_TB_Roadmap.md`](docs/OTAP_TB_Roadmap.md) | Terabit-scale deployment: NUMA topology, DPDK integration, 5 configurations from 800 Gbps to 6.5 Tbps |
+| [`research/`](research/) | Research briefs: constellation geometry, fiber capacity limits, photon geometry |
 
 ---
 
